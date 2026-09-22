@@ -106,6 +106,24 @@ A heavy torso and light extremities means limbs whip around a stable core, which
 
 **Friction:** high on extremities (0.8–1.0), low on torso and upper limbs (0.2–0.3). The body should slide off surfaces while hands and feet bite.
 
+### Joint tone
+
+**Added 2026-09-22, after the phase 5 playtest, and a gap of the same kind as the pull mechanic.** Every joint above is specified by where it may not go. None of them was specified by how willingly it goes anywhere, and the answer the engine gives by default is "completely" — a constraint with limits and no resistance is frictionless. Fourteen frictionless joints is a body with no muscle tone, and it played as unresponsive rather than heavy: limbs swung until something stopped them, nothing held a pose, and the word from the playtest was "limp".
+
+**Every joint gets resistance. The target is tone, not rigidity** — the climber should still be floppy, just not boneless. This is the dial most likely to be over-tightened in a moment of frustration, and a rig that holds every pose perfectly is a marionette, which is a different and worse game.
+
+| Joint | Mechanism | Why this one |
+| --- | --- | --- |
+| Ball sockets | `MaxFrictionTorque` | Resists rotation to a torque cap and then yields |
+| Elbows, knees | A weak servo holding a rest angle | A `HingeConstraint` has no friction property, so it borrows its actuator |
+| Grips | `MaxFrictionTorque` | See below |
+
+**Elbows and knees rest at a slight bend rather than at zero.** Both hinges are limited to roughly `[0°, 145°]` and both rested at exactly 0 — which is their hard lower stop. A joint parked on its own limit is a solver pressing against a wall every frame: it buzzes, it jitters and it never settles. A dozen degrees inside the range removes the contact entirely, and it looks better besides, because a relaxed arm is not a straight arm.
+
+The servo is what delivers both at once. A weak motor at zero velocity would hold whatever angle the joint drifted to, including zero; a weak servo holds a *chosen* angle. Weak is load-bearing in both cases — an `AlignPosition` at a fraction of body weight has thousands of torque available at the same joint, so a reach straightens the arm without noticing the tone. What the tone wins is the argument with nothing else pulling.
+
+**This reverses the resting state chosen when the pull mechanic was added**, which left the hinges unactuated so they would hang loose. Hanging loose turned out to be the complaint.
+
 ## Limb movement and grip
 
 ### Movement without an IK solver
@@ -136,6 +154,10 @@ stateDiagram-v2
 Control loop per limb: **hold the key to release and aim, release the key to grip.** Holding is the active, tiring state. This inversion matters — it means letting go of the keyboard leaves you safely gripped rather than falling.
 
 **A grip creates a `BallSocketConstraint`** between the extremity and the surface, never a `WeldConstraint`. A ball socket lets the body pivot around the grip point, which is physically correct and looks dramatically better when the climber is dangling from one hand.
+
+**That pivot needs damping, or it is a pendulum.** An undamped hold lets the body swing about it and keep swinging, so every grip ended in a wait for the wobble to stop — and a climber who has to wait for their own body to settle before the next reach is not really driving it. The grip constraint carries a friction torque for the same reason the body's joints do.
+
+Tuned to stop a hold *ringing*, not to stop the body moving. The pivot is the entire reason for choosing a ball socket over a weld, so raising this until the body hangs rigid would quietly undo the decision above and take the one-handed dangle with it.
 
 ### One function governs everything
 

@@ -236,6 +236,60 @@ Config.Stamina = {
 	MinToGrip = 15,
 }
 
+-- Joint tone: the resistance that stops the body being a bag of loose parts.
+--
+-- Every joint had limits and nothing else, so nothing anywhere in the rig held a
+-- pose. Limbs swung until something stopped them and the body read as unresponsive
+-- rather than heavy -- the playtest word was "limp". The goal here is tone, not
+-- rigidity: the climber should still be floppy, just not boneless.
+--
+-- TWO NUMBERS BECAUSE THERE ARE TWO MECHANISMS, not because tone is two ideas.
+-- Roblox gives a BallSocketConstraint a friction torque and gives a HingeConstraint
+-- nothing of the kind, so hinges borrow their actuator instead and hold a target
+-- angle softly. Dry friction and a weak servo do not feel the same at equal torque,
+-- so one shared number would mean tuning one joint type by making the other wrong.
+Config.Joints = {
+	-- MaxFrictionTorque on the shoulders, hips, wrists, ankles and neck. Resists
+	-- rotation up to this much and then yields, so a limb settles where it is put
+	-- and can still be moved.
+	--
+	-- Wants to sit near the gravity torque on the limb hanging off it: below that
+	-- and the joint sags anyway, far above it and the arm is a statue. Guess.
+	BallSocketFriction = 250,
+
+	-- ServoMaxTorque on the idle elbows and knees. Same intent as the friction above
+	-- and the same scale, but it is doing more work -- see RestBend.
+	--
+	-- Has to stay well under what an AlignPosition can generate at the same joint, or
+	-- a reach would be fighting the limb's own tone to straighten it. With MaxForce at
+	-- 1.4 body weights over a forearm's leverage there are thousands of torque
+	-- available against this, so there is a lot of room before that becomes a problem.
+	HingeTone = 250,
+
+	-- How fast a relaxed elbow or knee settles toward its rest bend, in radians per
+	-- second. This is a limb relaxing, not a limb acting, so it is deliberately
+	-- unhurried.
+	--
+	-- UNITS ARE THE RISK HERE. TargetAngle is degrees and AngularSpeed is radians per
+	-- second, which is Roblox being inconsistent rather than a typo. If a released
+	-- limb takes an age to sag into its bend, this is the first suspect.
+	HingeSettleSpeed = 2,
+
+	-- The rest angle of an elbow or a knee, in degrees, and a fix for a fault flagged
+	-- in phase 2 and never addressed: both hinges rested at exactly 0, which is their
+	-- hard lower stop. A joint parked on its own limit is a solver pressing against a
+	-- wall every frame -- it buzzes, it jitters, and it never quite settles.
+	--
+	-- A dozen degrees inside the range costs nothing and removes the contact
+	-- entirely. It also looks right: a relaxed arm is not a straight arm.
+	--
+	-- Positive is flexion for both hinges -- the knee's axis is flipped at build for
+	-- exactly that reason -- so one value bends an elbow and a knee the way each
+	-- actually bends. Zero here restores the old buzzing behaviour, which is a useful
+	-- thing to be able to do while working out whether this is the fix.
+	RestBend = 12,
+}
+
 -- Pulling: the hinge motors on the elbows and knees, and the only way the body goes
 -- up. Nothing here comes from the design doc, which had no ascent mechanism at all.
 --
@@ -407,6 +461,21 @@ Config.Grip = {
 	-- in miniature. A little slack means the hand gets there and the force falls to
 	-- zero on its own, which is what makes a reach settle instead of straining.
 	ReachFraction = 0.95,
+
+	-- MaxFrictionTorque on the ball socket a grip creates, which is a different joint
+	-- from the body's own and needs its own number. Without it a gripped climber is a
+	-- pendulum: the hold is frictionless, so the body swings about it and keeps
+	-- swinging, and every grip ends in a wait for the wobble to stop.
+	--
+	-- Larger than the body's joints because it is resisting the whole climber's weight
+	-- on the leverage of a whole torso, not one limb on one segment.
+	--
+	-- DO NOT RAISE THIS UNTIL IT LOCKS. The design doc picks a ball socket over a weld
+	-- specifically so the body can pivot around the hold, and calls that out as what
+	-- makes hanging from one hand look right. This is meant to settle the swing, not
+	-- delete it -- enough is when a grip stops ringing, not when the body stops moving.
+	-- Guess.
+	DampingTorque = 800,
 }
 
 -- Input. The doc's solo-player binding is Q / E / Z / C.

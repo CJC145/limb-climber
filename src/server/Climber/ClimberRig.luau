@@ -39,9 +39,11 @@ export type Limb = {
 	-- Config.Grip.ReachFraction.
 	reach: number,
 
-	-- The elbow or knee this limb pulls with, already carrying its torque and its
-	-- signed velocity. Switching it on is a matter of setting ActuatorType, which
-	-- GripService does when the limb is both gripped and pulling.
+	-- The elbow or knee this limb pulls with, carrying both of its actuators already
+	-- configured: a motor for the pull and a weak servo for the limb's resting tone.
+	-- GripService picks between them with ActuatorType and never sets it to None --
+	-- an unactuated hinge has no resistance at all, which is the limpness the servo
+	-- exists to fix.
 	pullHinge: HingeConstraint,
 }
 
@@ -505,6 +507,15 @@ local function buildJoints(model: Model): { [string]: HingeConstraint }
 		-- way there costs nothing and is one less joint fighting the player.
 		constraint.TwistLimitsEnabled = false
 
+		-- Tone. Up to this much torque resisting rotation, and then the joint yields,
+		-- so a limb holds roughly where it was left without being locked there.
+		--
+		-- The cone limit says where a joint may not go; this says how willingly it
+		-- goes anywhere at all. The rig had the first and nothing of the second, which
+		-- is why it read as limp rather than heavy -- every joint was frictionless and
+		-- nothing in the body resisted being swung.
+		constraint.MaxFrictionTorque = Config.Joints.BallSocketFriction
+
 		constraint.Parent = proximal
 	end
 
@@ -528,17 +539,39 @@ local function buildJoints(model: Model): { [string]: HingeConstraint }
 		constraint.LowerAngle = spec.Min
 		constraint.UpperAngle = spec.Max
 
-		-- The motor's settings are written once here and never touched again; the only
-		-- thing that changes at runtime is whether it is switched on. Limits still
-		-- apply while it drives, so a motored elbow stops at 145 rather than folding
-		-- the forearm through the upper arm.
+		-- A hinge has two actuators and this rig uses both, for two different jobs.
+		-- Every setting for each is written once here; the only thing that changes at
+		-- runtime is which of the two is switched on. Limits apply to both, so a
+		-- motored elbow stops at 145 rather than folding the forearm through the upper
+		-- arm.
+		--
+		-- Motor: the pull. Drives at a fixed rate with enough torque to lift the body.
 		constraint.MotorMaxTorque = Config.Pull.MotorMaxTorque
 		constraint.AngularVelocity = Config.Pull.AngularVelocity * spec.PullDirection
 
-		-- None, not Motor with a zero velocity. A motor asked to hold zero is still a
-		-- motor: it would spend MotorMaxTorque resisting every bend the ragdoll makes,
-		-- and the elbows and knees would stop hanging loose. Off means off.
-		constraint.ActuatorType = Enum.ActuatorType.None
+		-- Servo: the resting state. Seeks a slight bend, weakly.
+		--
+		-- THIS REVERSES AN EARLIER DECISION, deliberately. The pull mechanic left
+		-- these hinges at ActuatorType.None so they would hang loose, on the reasoning
+		-- that an actuator holding a target is an actuator fighting the ragdoll. That
+		-- reasoning was sound and the conclusion was wrong: hanging loose *is* the
+		-- complaint. A hinge with limits and no actuator has no resistance at all, and
+		-- four of them is a body with no muscle tone in its elbows or knees.
+		--
+		-- A servo is the better half of the trade because it fixes the rest angle at
+		-- the same time. A weak motor at zero velocity would hold whatever angle it
+		-- drifted to, including zero -- the hard stop the joint buzzes against. A weak
+		-- servo holds a chosen angle, so the joint settles a dozen degrees inside its
+		-- range and stays there.
+		--
+		-- Weak is the load-bearing word. At this torque a reach straightens the arm
+		-- without noticing the servo; what the servo wins is the argument with nothing
+		-- else pulling.
+		constraint.ServoMaxTorque = Config.Joints.HingeTone
+		constraint.TargetAngle = Config.Joints.RestBend
+		constraint.AngularSpeed = Config.Joints.HingeSettleSpeed
+
+		constraint.ActuatorType = Enum.ActuatorType.Servo
 
 		constraint.Parent = proximal
 		hinges[spec.Name] = constraint

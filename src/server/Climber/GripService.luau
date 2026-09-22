@@ -100,12 +100,17 @@ end
 -- itself; the climber cannot lift itself by its own elbows any more than a person can
 -- lift themselves by their own belt. Gating on Gripped is therefore not a safety rule
 -- -- it is just declining to run a motor that could only produce a twitch.
+-- Motor or Servo, never None. ClimberRig configures both actuators at build, so this
+-- chooses between "haul at a fixed rate with real torque" and "hold a slight bend
+-- weakly" -- the second being the limb's resting tone rather than the limb switched
+-- off. A hinge with no actuator has no resistance at all, which is the limpness this
+-- was added to fix.
 local function applyPull(runtime: LimbRuntime)
 	local driving = runtime.pulling and runtime.state == "Gripped"
 
 	runtime.limb.pullHinge.ActuatorType = if driving
 		then Enum.ActuatorType.Motor
-		else Enum.ActuatorType.None
+		else Enum.ActuatorType.Servo
 end
 
 -- A grip state change is an edge and goes out the moment it happens, unthrottled.
@@ -191,6 +196,17 @@ local function attemptGrip(runtime: LimbRuntime): boolean
 	constraint.Attachment0 = runtime.limb.gripAttachment
 	constraint.Attachment1 = surfaceAttachment
 	constraint.LimitsEnabled = false
+
+	-- Damped, because a frictionless hold is a pivot and a body on a pivot is a
+	-- pendulum. Every grip used to end in a swing that had to be waited out, and a
+	-- climber that has to wait for its own body to stop moving before the next reach
+	-- is a climber the player is not really driving.
+	--
+	-- Resists the swing rather than forbidding it. The pivot is the point of choosing
+	-- a ball socket over a weld, so this is tuned to stop a hold ringing, not to stop
+	-- the body moving -- see the note on Config.Grip.DampingTorque.
+	constraint.MaxFrictionTorque = Config.Grip.DampingTorque
+
 	constraint.Parent = extremity
 
 	runtime.surfaceAttachment = surfaceAttachment
@@ -418,8 +434,9 @@ function GripService.Bind(rig: ClimberRig.Rig)
 		}
 
 		-- Matches the ActuatorType ClimberRig.Build leaves the hinge at, so the record
-		-- and the constraint agree from the first frame.
-		limb.pullHinge.ActuatorType = Enum.ActuatorType.None
+		-- and the constraint agree from the first frame. Servo is the resting state:
+		-- the limb has tone before anyone has touched it.
+		limb.pullHinge.ActuatorType = Enum.ActuatorType.Servo
 	end
 
 	if stepConnection then
