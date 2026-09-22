@@ -8,7 +8,9 @@ local Climber = script.Parent.Climber
 local CameraController = require(Climber.CameraController)
 local TargetReticle = require(Climber.TargetReticle)
 local InputRouter = require(Climber.InputRouter)
+local HUD = require(Climber.HUD)
 
 CameraController.Start()
 TargetReticle.Start()
 InputRouter.Start()
+HUD.Start()

@@ -3,7 +3,8 @@
 -- Keys to limb intents, for this player's limbs only.
 --
 -- Ownership is read from the attribute LimbAssignment publishes on the player.
--- This module keeps no mapping of its own -- it asks, every time.
+-- This module keeps no mapping of its own -- it asks, every time. A player with no
+-- limbs is a spectator and simply never passes that check.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -20,17 +21,47 @@ type LimbId = Types.LimbId
 
 local InputRouter = {}
 
-local heldSince: { [LimbId]: number } = {}
+-- Which limbs are currently reaching, and which key started each reach. The binding
+-- is recorded at press time rather than resolved again on release, because Space
+-- resolves through ownership and ownership can change mid-hold -- inheriting a
+-- second limb from a disconnect would otherwise strand the first one mid-reach.
+local held: { [LimbId]: true } = {}
+local heldByKey: { [Enum.KeyCode]: LimbId } = {}
 
 local function ownsLimb(limbId: LimbId): boolean
 	local attribute = Config.Net.LimbOwnershipAttributePrefix .. limbId
 	return Players.LocalPlayer:GetAttribute(attribute) == true
 end
 
+-- Space is an alias, not a binding: it answers only for a player who owns exactly
+-- one limb, which is the four-player case. Anyone holding two or more gets nothing
+-- from it, because there would be no way to say which limb they meant.
+local function soloOwnedLimb(): LimbId?
+	local found: LimbId? = nil
+
+	for _, limbId in Config.Input.LimbOrder do
+		if ownsLimb(limbId) then
+			if found then
+				return nil
+			end
+			found = limbId
+		end
+	end
+
+	return found
+end
+
 function InputRouter.Start()
 	local limbByKey: { [Enum.KeyCode]: LimbId } = {}
 	for limbId, key in Config.Input.LimbKeys do
-		limbByKey[key] = (limbId :: any) :: LimbId
+		limbByKey[key] = limbId
+	end
+
+	local function limbForKey(key: Enum.KeyCode): LimbId?
+		if key == Config.Input.SoloLimbKey then
+			return soloOwnedLimb()
+		end
+		return limbByKey[key]
 	end
 
 	-- The client caps its own send rate too. RenderStepped on a high-refresh display
@@ -43,21 +74,30 @@ function InputRouter.Start()
 			return
 		end
 
-		local limbId = limbByKey[input.KeyCode]
+		local limbId = limbForKey(input.KeyCode)
 		if not limbId or not ownsLimb(limbId) then
 			return
 		end
 
-		heldSince[limbId] = os.clock()
-	end)
-
-	UserInputService.InputEnded:Connect(function(input)
-		local limbId = limbByKey[input.KeyCode]
-		if not limbId or heldSince[limbId] == nil then
+		-- A solo-limb player can reach the same limb through its own key and through
+		-- Space. Whichever arrives first owns the reach; the second press is ignored
+		-- so that releasing one key cannot end a reach the other is still holding.
+		if held[limbId] then
 			return
 		end
 
-		heldSince[limbId] = nil
+		held[limbId] = true
+		heldByKey[input.KeyCode] = limbId
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		local limbId = heldByKey[input.KeyCode]
+		if not limbId then
+			return
+		end
+
+		held[limbId] = nil
+		heldByKey[input.KeyCode] = nil
 		lastSentAt[limbId] = nil
 
 		-- Releasing the key is the grip attempt, so this one always goes out.
@@ -67,7 +107,7 @@ function InputRouter.Start()
 	RunService.RenderStepped:Connect(function()
 		local now = os.clock()
 
-		for limbId in heldSince do
+		for limbId in held do
 			local last = lastSentAt[limbId]
 			if last == nil or now - last >= minInterval then
 				lastSentAt[limbId] = now
