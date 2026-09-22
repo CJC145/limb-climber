@@ -96,20 +96,21 @@ Config.Stamina = {
 -- the torso is still anchored until phase 5, so the head barely moves and nothing
 -- below can be judged properly until the body can fall.
 Config.Camera = {
-	-- From the design doc: blend in over roughly 0.3s, back out over 0.5s.
-	FocusBlendIn = 0.3,
-	FocusBlendOut = 0.5,
+	-- Radians of rotation per pixel of mouse movement. Roughly a full turn per
+	-- 2000 pixels. Guess, and the first thing to try if the view feels wrong.
+	MouseSensitivity = 0.003,
 
-	-- The third-person toggle is not a blend time the doc gives, but cutting
-	-- between two cameras this far apart is jarring enough to be a bug. Guess.
+	-- The third-person toggle blend. Cutting between two cameras this far apart is
+	-- jarring enough to be a bug. Guess.
 	ThirdPersonBlend = 0.35,
 
-	-- Exponential follow rates, per second. Higher is tighter, so higher means
-	-- *less* damping -- the doc's "light damping" on position is the large number
-	-- and its "heavily damped" rotation is the small one. The gap between these two
-	-- is the whole head-cam: the body flails, the horizon does not.
+	-- How fast the camera's position follows the head, per second. Higher is
+	-- tighter, so higher means *less* damping. This is the whole of the remaining
+	-- stabilisation: the head jerks with the ragdoll and the view must not.
+	--
+	-- There is no rotation rate any more. Rotation is the mouse, undamped and 1:1 --
+	-- a view that lagged the hand moving it would feel broken rather than heavy.
 	PositionFollowRate = 14,
-	RotationFollowRate = 2.5,
 
 	-- Where the eye sits relative to the head part. Clearance is measured from the
 	-- head's front face rather than its centre, so it stays outside the head
@@ -118,36 +119,10 @@ Config.Camera = {
 	EyeHeight = 0.2,
 
 	-- Keeps the view out of the straight-up/straight-down singularity, where yaw
-	-- stops being meaningful and a damped camera can spin. The neck's 45 degree
-	-- limit means the head alone never gets near this; the focus vantage can.
+	-- stops being meaningful and the view can flip through the pole. Degrees.
 	MaxPitch = 80,
 
-	-- Focus-cam framing. The vantage sits behind the body on the axis from the body
-	-- to the nearest surface, and slightly above it, so the surface is in front of
-	-- the player and the limb reaches out toward it.
-	FocusDistance = 7,
-	FocusHeight = 2,
-
-	-- How far from the torso to look for that surface. Wide enough to still find
-	-- the wall while hanging off it at arm's length, narrow enough not to lock onto
-	-- distant scenery -- and, at the current spawn height, not to find the baseplate
-	-- 20 studs below.
-	FocusSearchRadius = 12,
-
-	-- How quickly the vantage follows the surface direction. The nearest-surface
-	-- answer changes the instant one part overtakes another, so this is damped for
-	-- the same reason the head is: without it the camera jumps whenever the body
-	-- drifts across a seam between two blocks of the same wall.
-	WallFollowRate = 3,
-
-	-- What the focus-cam aims at, along the line from the extremity to the surface
-	-- point. 0 is the limb alone, which is a close-up of a hand with no indication
-	-- of what it is reaching for; 1 is the surface alone, which loses a limb that
-	-- reaches wide. The useful shot is between them.
-	FocusWallBias = 0.5,
-
-	-- Third-person rest pose, measured back from the eye along the stabilised look
-	-- direction.
+	-- Third-person rest pose, measured back from the eye along the look direction.
 	ThirdPersonDistance = 14,
 	ThirdPersonHeight = 3,
 
@@ -264,40 +239,13 @@ Config.Net = {
 -- on part sizes, part positions and attachment positions. Nothing in code writes
 -- them, so there is nothing here to tune.
 --
--- Extremity is structure rather than tuning, and would sit in ClimberRig with the
--- rest of the rig topology if the server were the only reader. Phase 4's focus-cam
--- is a second reader on the client, which cannot require anything under
--- ServerScriptService, and a mapping this small is exactly the kind that gets
--- copied and then drifts. One copy, here, read by both.
---
--- Annotated through a named type for the same reason InputConfig above is: without
--- it the keys infer as plain `string` and every consumer indexing by LimbId has to
--- cast.
-export type RigConfig = {
-	ModelName: string,
-	SpawnPosition: Vector3,
-	TemplateName: string,
-	Extremity: { [LimbId]: string },
-}
-
-local rig: RigConfig = {
+Config.Rig = {
 	ModelName = "Climber",
 	SpawnPosition = Vector3.new(0, 20, 0),
 
 	-- Name of the rig template under ServerStorage/Assets, as default.project.json
 	-- mounts it. ClimberRig clones this; the clone is renamed to ModelName.
 	TemplateName = "ClimberRig",
-
-	-- Which part carries each limb's grip point and AlignPosition. The server
-	-- builds against these; the camera frames them.
-	Extremity = {
-		ArmR = "HandR",
-		ArmL = "HandL",
-		LegR = "FootR",
-		LegL = "FootL",
-	},
 }
-
-Config.Rig = rig
 
 return Config

@@ -6,8 +6,17 @@
 -- is phase 5 and the shared inventory is phase 6; neither is stubbed here.
 --
 -- Decision 5 says the HUD is how limb intent gets communicated without voice chat.
--- That is a phase 4 job -- it needs the focus-cam blend to have something to show.
 -- What this does is narrower: tell the player which limbs answer to them.
+--
+-- The intent indicator is still missing, and after the phase 4 playtest it is the
+-- *only* thing that can carry decision 5. The design doc used to hand that job to
+-- the focus-cam blend, which never really held -- each client runs its own camera,
+-- so the blend was only ever visible to the player doing it -- and the blend has
+-- since been removed outright in favour of mouse-look. Nothing replicates limb
+-- intent to other players today.
+--
+-- The plumbing is already there: LimbState broadcasts "Reaching" to every client
+-- the moment a key goes down. What is missing is a reader here.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

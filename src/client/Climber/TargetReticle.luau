@@ -3,15 +3,20 @@
 -- The local, instant aim point.
 --
 -- This is the latency trick from the design doc: the limb's pursuit of the target
--- goes through the server and lags, but the reticle is drawn locally at the mouse
--- every frame and never does. Players read responsiveness from the cursor.
+-- goes through the server and lags, but the aim is resolved locally every frame and
+-- never does.
+--
+-- Since the phase 4 playtest the aim ray is the camera's own look direction rather
+-- than a ray through a free screen cursor. The reticle therefore sits nailed to the
+-- centre of the viewport and never moves within it -- the player aims by turning.
+-- The trick still holds, and reads better for it: turning is local and instant,
+-- so responsiveness comes off the whole view rather than off a cursor.
 --
 -- Nothing in here may wait on, or be corrected by, anything from the server.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Climber.Config)
 
@@ -19,7 +24,9 @@ local TargetReticle = {}
 
 local targetPosition = Vector3.zero
 
-local function createGui(): Frame
+-- Returns nothing. The dot is placed once and never moves, so unlike the free
+-- cursor it replaced there is nothing for the render loop to hold on to.
+local function createGui()
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "Reticle"
 	screenGui.ResetOnSpawn = false
@@ -32,6 +39,10 @@ local function createGui(): Frame
 	dot.Name = "Dot"
 	dot.Size = UDim2.fromOffset(8, 8)
 	dot.AnchorPoint = Vector2.new(0.5, 0.5)
+	-- Fixed at the centre and never moved again. IgnoreGuiInset above makes GUI
+	-- space match viewport space, so this lands on the camera's optical centre --
+	-- exactly where the aim ray is cast.
+	dot.Position = UDim2.fromScale(0.5, 0.5)
 	dot.BackgroundColor3 = Color3.new(1, 1, 1)
 	dot.BorderSizePixel = 0
 	dot.Parent = screenGui
@@ -39,8 +50,6 @@ local function createGui(): Frame
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = dot
-
-	return dot
 end
 
 -- Mirrors the server's clamp so the drawn target never promises reach the limb
@@ -61,7 +70,7 @@ function TargetReticle.GetTargetPosition(): Vector3
 end
 
 function TargetReticle.Start()
-	local dot = createGui()
+	createGui()
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -81,20 +90,26 @@ function TargetReticle.Start()
 	-- camera position; phase 4 removed it there -- the head-cam reads the live Head.)
 	local origin = Config.Rig.SpawnPosition
 
-	RunService.RenderStepped:Connect(function()
+	-- Bound one priority after CameraController rather than on RenderStepped, which
+	-- runs before it. On RenderStepped this would aim down last frame's camera, and
+	-- with mouse-look that is a frame of aim lag in the one system whose entire job
+	-- is to have none.
+	RunService:BindToRenderStep("ClimberReticle", Enum.RenderPriority.Camera.Value + 1, function()
 		local camera = workspace.CurrentCamera
 		if not camera then
 			return
 		end
 
-		local mouse = UserInputService:GetMouseLocation()
-		dot.Position = UDim2.fromOffset(mouse.X, mouse.Y)
+		-- Straight off the camera rather than through ViewportPointToRay at the
+		-- centre pixel: the look vector *is* the optical centre, with no viewport
+		-- rounding or GUI inset in between.
+		local eye = camera.CFrame.Position
+		local direction = camera.CFrame.LookVector
 
-		local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
 		local reach = Config.Grip.MaxTargetDistance * 2
-		local hit = workspace:Raycast(ray.Origin, ray.Direction * reach, params)
+		local hit = workspace:Raycast(eye, direction * reach, params)
 
-		local aim = if hit then hit.Position else ray.Origin + ray.Direction * reach
+		local aim = if hit then hit.Position else eye + direction * reach
 		targetPosition = clampToReach(aim, origin)
 	end)
 end

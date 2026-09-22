@@ -1,191 +1,75 @@
 --!strict
 
--- Stabilised head-cam, focus-cam blending, third-person toggle.
+-- Mouse-look head-cam and third-person toggle.
 --
--- Three rules from the design doc drive everything here, and the last two are what
--- separate a camera on a ragdoll from a motion-sickness generator:
+-- Revised after the phase 4 playtest. The camera used to take its orientation from
+-- the climber's head, damped heavily, with no mouse-look at all -- the player could
+-- not choose where to look. It did not survive contact with actual play, so the
+-- mouse drives the view now and the focus-cam that existed to compensate is gone.
 --
---   1. Follow the head's position with light damping.
---   2. Damp rotation heavily. Never copy the head's orientation directly.
---   3. Hard-lock the up vector to world up. The view never rolls, ever.
+-- What survived, and why:
 --
--- Rule 3 is why this module works in (position, yaw, pitch) instead of CFrames.
--- Two roll-free CFrames slerped together are *not* roll-free in between, so
--- blending poses as CFrames would let roll back in for the duration of every focus
--- blend -- precisely when the camera is moving most and the player is most likely
--- to feel it. Reducing a pose to three numbers and rebuilding it with a literal
--- zero roll term makes roll unrepresentable rather than merely small.
+--   * Position still follows the Head part with light damping. This is the whole of
+--     the remaining stabilisation and it is the half that was always doing the work:
+--     the head bobs and jerks with the ragdoll, and the camera must not.
+--   * The up vector is still hard-locked to world up. The view never rolls, ever.
+--     Roll is not damped toward zero -- yaw and pitch are the only two numbers this
+--     module keeps, so roll has nowhere to live. See NO_ROLL.
 --
--- There is no mouse-look. The camera turns when the climber's head turns and at no
--- other time, and the reticle is a free cursor over a view the player does not
--- steer. That helplessness is the intended feel, not an omission.
+-- What did not survive: the head's *orientation* is now read nowhere. The camera
+-- reads Head.Position and Head.Size and nothing else about it.
 --
--- Every player runs their own copy, spectators included. Per the design doc the
--- resulting asymmetry -- four screens showing four different parts of the climb --
--- is a feature, because it forces players to describe what they can see.
+-- Aiming is the camera's own look direction. TargetReticle casts down the centre of
+-- the screen, so the reticle no longer moves within the viewport -- the player aims
+-- by turning. The design doc's latency trick still holds and arguably reads better:
+-- turning is local and instant, while the limb's pursuit of the target lags.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Climber.Config)
-local Types = require(ReplicatedStorage.Climber.Types)
-
-local InputRouter = require(script.Parent.InputRouter)
-
-type LimbId = Types.LimbId
-
--- A camera pose, reduced to what survives the up-lock. Anything a CFrame can say
--- that these three cannot is roll, which is the point.
-type Pose = {
-	position: Vector3,
-	yaw: number,
-	pitch: number,
-}
 
 local CameraController = {}
 
-local TWO_PI = math.pi * 2
-local MAX_PITCH = math.rad(Config.Camera.MaxPitch)
-
--- The hard lock, as a named constant so that a future edit to the rebuild below has
--- to delete something called NO_ROLL rather than change an anonymous third argument.
+-- The hard up-lock, as a named constant so that a future edit has to delete
+-- something called NO_ROLL rather than change an anonymous third argument.
 local NO_ROLL = 0
 
--- Blend durations are divisors. A zero left in Config would produce inf and then
+-- The blend duration is a divisor. A zero left in Config would produce inf and then
 -- nan, and a nan CFrame is an error that surfaces nowhere near its cause.
 local MIN_BLEND = 1e-3
 
+local MAX_PITCH = math.rad(Config.Camera.MaxPitch)
+local TWO_PI = math.pi * 2
+
 -- RIG ------------------------------------------------------------------------
---
--- Read-only, and for framing only. The client never writes rig state -- it is
--- looking at replicated positions to decide where to stand, which is display, not
--- authority.
 
 local head: BasePart? = nil
-local torso: BasePart? = nil
-local extremities: { [LimbId]: BasePart } = {}
-
--- For the focus-cam's nearest-surface query. The climber is excluded or the answer
--- is always the climber's own limbs.
-local surfaceParams: OverlapParams? = nil
 
 local function resolveRig()
 	local model = workspace:WaitForChild(Config.Rig.ModelName)
-
-	local resolvedTorso = model:WaitForChild("Torso") :: BasePart
-	for limbId, partName in Config.Rig.Extremity do
-		extremities[limbId] = model:WaitForChild(partName) :: BasePart
-	end
-
-	local params = OverlapParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { model }
-	surfaceParams = params
-
-	torso = resolvedTorso
-
-	-- Assigned last on purpose: the render loop tests `head` alone to decide whether
-	-- the rig is usable, which is only true if everything else is already in place.
 	head = model:WaitForChild("Head") :: BasePart
-end
-
--- The closest point on the nearest thing that is not the climber, or nil if there
--- is nothing within range.
---
--- Pure geometry. It does not ask whether the surface is grippable, and it must not
--- start: that question belongs to CanGrip and nowhere else. Where the camera should
--- face is a framing decision, not a grip decision, so the two never meet.
-local function nearestSurfacePoint(origin: Vector3): Vector3?
-	local params = surfaceParams
-	if not params then
-		return nil
-	end
-
-	local candidates = workspace:GetPartBoundsInRadius(origin, Config.Camera.FocusSearchRadius, params)
-
-	local best: Vector3? = nil
-	local bestDistance = math.huge
-
-	-- Narrowed rather than assumed, matching GripService's query: the bounds call is
-	-- typed as returning plain Instances even though it only ever hands back parts.
-	for _, candidate in candidates do
-		if candidate:IsA("BasePart") then
-			local point = candidate:GetClosestPointOnSurface(origin)
-			local distance = (point - origin).Magnitude
-			if distance < bestDistance then
-				best = point
-				bestDistance = distance
-			end
-		end
-	end
-
-	return best
 end
 
 -- MATHS ----------------------------------------------------------------------
 
--- Shortest arc between two angles, so damping across the +/-pi seam takes the short
--- way round. Without this a head that turns past the seam sends the camera sweeping
--- the long way through a full rotation.
-local function angleDelta(from: number, to: number): number
-	return (to - from + math.pi) % TWO_PI - math.pi
-end
-
-local function lerpAngle(from: number, to: number, alpha: number): number
-	return from + angleDelta(from, to) * alpha
-end
-
 -- Exponential smoothing written so the result does not change with frame rate. A
 -- plain `lerp(current, target, rate * dt)` would make the camera follow harder on a
--- 240Hz display than on a 60Hz one, which is a tuning trap: the feel you settle on
--- would only be correct on the machine you tuned it on.
+-- 240Hz display than on a 60Hz one, which is a tuning trap: the feel settled on
+-- would only be correct on the machine it was tuned on.
 local function smoothAlpha(rate: number, deltaTime: number): number
 	return 1 - math.exp(-rate * deltaTime)
 end
 
--- Smoothstep. The focus blend uses it so the camera leaves and arrives at rest
--- rather than starting and stopping at full speed, which reads as a jolt at both
--- ends of a move this large.
+-- Smoothstep, so the third-person toggle leaves and arrives at rest rather than
+-- starting and stopping at full speed.
 local function ease(t: number): number
 	return t * t * (3 - 2 * t)
 end
 
--- A direction becomes yaw and pitch; roll has nowhere to go. The fallback covers a
--- zero-length direction, where the angles are genuinely undefined and holding the
--- previous frame's is the only answer that does not snap the view.
-local function anglesFromDirection(direction: Vector3, fallbackYaw: number, fallbackPitch: number): (number, number)
-	if direction.Magnitude < 1e-4 then
-		return fallbackYaw, fallbackPitch
-	end
-
-	local unit = direction.Unit
-	local yaw = math.atan2(-unit.X, -unit.Z)
-	local pitch = math.clamp(math.asin(math.clamp(unit.Y, -1, 1)), -MAX_PITCH, MAX_PITCH)
-
-	return yaw, pitch
-end
-
--- Yaw and pitch become a rotation, and the third euler term is where the up vector
--- is locked to world up. Not damped toward zero -- zero.
-local function rotationOf(pose: Pose): CFrame
-	return CFrame.fromEulerAnglesYXZ(pose.pitch, pose.yaw, NO_ROLL)
-end
-
-local function poseToCFrame(pose: Pose): CFrame
-	return CFrame.new(pose.position) * rotationOf(pose)
-end
-
-local function blendPoses(from: Pose, to: Pose, alpha: number): Pose
-	return {
-		position = from.position:Lerp(to.position, alpha),
-		yaw = lerpAngle(from.yaw, to.yaw, alpha),
-		pitch = from.pitch + (to.pitch - from.pitch) * alpha,
-	}
-end
-
 -- Moves a 0..1 blend parameter toward a target without overshooting it, so a very
--- long frame cannot push a blend past its endpoint and back.
+-- long frame cannot push the toggle past its endpoint and back.
 local function approach(current: number, target: number, step: number): number
 	if current < target then
 		return math.min(target, current + step)
@@ -195,36 +79,26 @@ end
 
 -- STATE ----------------------------------------------------------------------
 
--- The damped follow of the head. Position tracks the head part itself; the eye
--- offset is applied afterwards, in the stabilised frame, so that a rolling head
--- cannot swing the eye point sideways even though it is offset from the head's
--- centre.
-local stabilised: Pose = {
-	position = Config.Rig.SpawnPosition,
-	yaw = 0,
-	pitch = 0,
-}
+-- The damped follow of the head's position. The eye offset is applied afterwards,
+-- in the camera's own frame, so the offset is rigidly attached to a view that never
+-- rolls rather than to a head that does.
+local stabilisedPosition = Config.Rig.SpawnPosition
 
 -- False until the head has been seen once. The first frame snaps rather than damps,
--- because damping in from the bootstrap vantage would open every session with an
+-- because easing in from the bootstrap vantage would open every session with an
 -- unrequested camera move.
 local tracking = false
 
-local focusAlpha = 0
+-- The view direction, and the only two numbers that describe it.
+local yaw = 0
+local pitch = 0
+
+-- Mouse movement since the last frame. Accumulated from events rather than polled,
+-- so movement that arrives between frames is added up rather than sampled and lost.
+local pendingDelta = Vector2.zero
+
 local thirdPersonAlpha = 0
 local thirdPersonEnabled = false
-
--- Held across the blend out. The player has let go by then, so InputRouter is
--- already reporting nil, but the pose still has to be computable until the blend
--- finishes or the camera would cut rather than return.
-local focusLimb: LimbId? = nil
-
--- The damped direction from the body toward the surface it is climbing, which is
--- the axis the focus vantage sits on. Reset between focuses so each one acquires
--- the wall fresh rather than easing out of wherever the last one left off.
-local wallYaw = 0
-local wallPitch = 0
-local wallTracking = false
 
 -- The camera this module has already put into Scriptable mode. Re-read every frame
 -- rather than captured once: if the engine ever swaps CurrentCamera out from under
@@ -244,145 +118,43 @@ local function activeCamera(): Camera?
 	return camera
 end
 
--- POSES ----------------------------------------------------------------------
+-- VIEW -----------------------------------------------------------------------
 
--- Where the camera sits when nothing is being focused: at the eyes in first person,
--- pulled back along the same stabilised look direction in third. Both share one
--- orientation, so the toggle moves the camera without ever turning it.
-local function restPose(headPart: BasePart): Pose
-	local rotation = rotationOf(stabilised)
-
-	-- Measured from the head's front face rather than its centre, so the camera
-	-- clears the head whatever proportions the modelled rig has. A fixed offset
-	-- would sit inside a larger head and show the player its interior.
-	local forward = headPart.Size.Z / 2 + Config.Camera.EyeClearance
-	local eye = stabilised.position + rotation * Vector3.new(0, Config.Camera.EyeHeight, -forward)
-
-	local pulledBack = eye
-		- rotation.LookVector * Config.Camera.ThirdPersonDistance
-		+ Vector3.yAxis * Config.Camera.ThirdPersonHeight
-
-	return {
-		position = eye:Lerp(pulledBack, ease(thirdPersonAlpha)),
-		yaw = stabilised.yaw,
-		pitch = stabilised.pitch,
-	}
+-- Yaw and pitch become a rotation, and the third euler term is where the up vector
+-- is locked to world up. Not damped toward zero -- zero.
+local function rotation(): CFrame
+	return CFrame.fromEulerAnglesYXZ(pitch, yaw, NO_ROLL)
 end
 
--- Not mounted on the limb. The design doc rules that out explicitly, and a camera
--- bolted to a swinging arm is unusable regardless.
---
--- The vantage is wall-facing: it sits behind the body on the body-to-surface axis,
--- so the surface is in front of the player and the limb reaches out toward it. Two
--- things fall out of that for free. The camera always moves *away* from the nearest
--- thing, so this vantage is much harder to bury in geometry than one that picks a
--- direction for other reasons. And the player can see where the limb is landing,
--- which is the entire point of shifting the view.
-local function focusPose(limbId: LimbId, rest: Pose, deltaTime: number): Pose
-	local extremity = extremities[limbId]
-	local bodyPart = torso
-	if not extremity or not bodyPart then
-		return rest
-	end
+local function applyMouseDelta()
+	local delta = pendingDelta
+	pendingDelta = Vector2.zero
 
-	local body = bodyPart.Position
-	local surfacePoint = nearestSurfacePoint(body)
+	-- Rightward mouse movement is positive X and has to turn the view right, which
+	-- is *decreasing* yaw: a positive rotation about +Y swings the look vector from
+	-- -Z toward -X, and -X is the viewer's left. Downward movement is positive Y and
+	-- lowers the pitch, which is the uninverted convention.
+	--
+	-- Wrapped rather than left to grow. Yaw is otherwise unbounded, and a player who
+	-- spins in one direction long enough would lose angular precision to the float.
+	yaw = (yaw - delta.X * Config.Camera.MouseSensitivity) % TWO_PI
 
-	if not surfacePoint then
-		-- Nothing within range to climb. Pull back behind the body and hold the
-		-- head-cam's own orientation, since with no surface there is no landing spot
-		-- to frame and nothing better to point at.
-		wallTracking = false
-
-		local rotation = rotationOf(rest)
-		return {
-			position = body
-				- rotation.LookVector * Config.Camera.FocusDistance
-				+ Vector3.yAxis * Config.Camera.FocusHeight,
-			yaw = rest.yaw,
-			pitch = rest.pitch,
-		}
-	end
-
-	-- Damped, and this one is not optional. The nearest-surface query changes its
-	-- answer the instant one part overtakes another, which on real geometry happens
-	-- mid-hold and without warning. Undamped, the vantage would jump the moment the
-	-- body drifted across a seam between two blocks of the same wall.
-	local targetYaw, targetPitch = anglesFromDirection(surfacePoint - body, rest.yaw, rest.pitch)
-
-	if wallTracking then
-		local alpha = smoothAlpha(Config.Camera.WallFollowRate, deltaTime)
-		wallYaw = lerpAngle(wallYaw, targetYaw, alpha)
-		wallPitch += (targetPitch - wallPitch) * alpha
-	else
-		-- First frame of a focus: take the wall direction as found. The blend is
-		-- what carries the camera there, so damping the acquisition too would just
-		-- make the move arrive late.
-		wallTracking = true
-		wallYaw = targetYaw
-		wallPitch = targetPitch
-	end
-
-	local toSurface = CFrame.fromEulerAnglesYXZ(wallPitch, wallYaw, NO_ROLL).LookVector
-
-	local vantage = body
-		- toSurface * Config.Camera.FocusDistance
-		+ Vector3.yAxis * Config.Camera.FocusHeight
-
-	-- Aimed between the limb and the surface rather than at either. At the surface
-	-- alone a limb reaching wide leaves the frame; at the limb alone the shot is a
-	-- close-up of a hand with no indication of what it is reaching for.
-	local focusPoint = extremity.Position:Lerp(surfacePoint, Config.Camera.FocusWallBias)
-	local yaw, pitch = anglesFromDirection(focusPoint - vantage, rest.yaw, rest.pitch)
-
-	return { position = vantage, yaw = yaw, pitch = pitch }
+	-- Clamped short of vertical, where yaw stops being meaningful and the view can
+	-- flip through the pole.
+	pitch = math.clamp(pitch - delta.Y * Config.Camera.MouseSensitivity, -MAX_PITCH, MAX_PITCH)
 end
 
--- FRAME ----------------------------------------------------------------------
-
-local function updateStabilised(headPart: BasePart, deltaTime: number)
-	local targetYaw, targetPitch = anglesFromDirection(
-		headPart.CFrame.LookVector,
-		stabilised.yaw,
-		stabilised.pitch
-	)
-
+local function updateStabilisedPosition(headPart: BasePart, deltaTime: number)
 	if not tracking then
 		tracking = true
-		stabilised = { position = headPart.Position, yaw = targetYaw, pitch = targetPitch }
+		stabilisedPosition = headPart.Position
 		return
 	end
 
-	-- Two rates, and the distance between them is the entire effect: the camera
-	-- keeps up with where the head *is* while lagging badly behind where it is
-	-- looking. The body flails; the horizon does not.
-	local positionAlpha = smoothAlpha(Config.Camera.PositionFollowRate, deltaTime)
-	local rotationAlpha = smoothAlpha(Config.Camera.RotationFollowRate, deltaTime)
-
-	stabilised = {
-		position = stabilised.position:Lerp(headPart.Position, positionAlpha),
-		yaw = lerpAngle(stabilised.yaw, targetYaw, rotationAlpha),
-		pitch = stabilised.pitch + (targetPitch - stabilised.pitch) * rotationAlpha,
-	}
-end
-
-local function updateFocusAlpha(deltaTime: number)
-	local requested = InputRouter.GetFocusLimb()
-
-	if requested then
-		-- Re-targets live. A player holding two keys is framed on the one they
-		-- reached for most recently, and pressing a second key part-way through a
-		-- blend redirects it rather than queueing behind it.
-		focusLimb = requested
-		focusAlpha = approach(focusAlpha, 1, deltaTime / math.max(Config.Camera.FocusBlendIn, MIN_BLEND))
-		return
-	end
-
-	focusAlpha = approach(focusAlpha, 0, deltaTime / math.max(Config.Camera.FocusBlendOut, MIN_BLEND))
-	if focusAlpha <= 0 then
-		focusLimb = nil
-		wallTracking = false
-	end
+	stabilisedPosition = stabilisedPosition:Lerp(
+		headPart.Position,
+		smoothAlpha(Config.Camera.PositionFollowRate, deltaTime)
+	)
 end
 
 local function updateThirdPersonAlpha(deltaTime: number)
@@ -393,6 +165,27 @@ local function updateThirdPersonAlpha(deltaTime: number)
 		deltaTime / math.max(Config.Camera.ThirdPersonBlend, MIN_BLEND)
 	)
 end
+
+-- Where the camera sits: at the eyes in first person, pulled back along the same
+-- look direction in third. Both share one orientation, so the toggle moves the
+-- camera without ever turning it.
+local function eyeCFrame(headPart: BasePart): CFrame
+	local rot = rotation()
+
+	-- Measured from the head's front face rather than its centre, so the camera
+	-- clears the head whatever proportions the modelled rig has. A fixed offset
+	-- would sit inside a larger head and show the player its interior.
+	local forward = headPart.Size.Z / 2 + Config.Camera.EyeClearance
+	local eye = stabilisedPosition + rot * Vector3.new(0, Config.Camera.EyeHeight, -forward)
+
+	local pulledBack = eye
+		- rot.LookVector * Config.Camera.ThirdPersonDistance
+		+ Vector3.yAxis * Config.Camera.ThirdPersonHeight
+
+	return CFrame.new(eye:Lerp(pulledBack, ease(thirdPersonAlpha))) * rot
+end
+
+--------------------------------------------------------------------------------
 
 function CameraController.Start()
 	-- A vantage for the frames before the rig replicates, and the last thing in this
@@ -406,6 +199,18 @@ function CameraController.Start()
 	-- camera for no reason.
 	task.spawn(resolveRig)
 
+	-- The reticle is the cursor now.
+	UserInputService.MouseIconEnabled = false
+
+	-- Deliberately not filtered on gameProcessedEvent. The cursor is locked to the
+	-- centre and nothing else in this game consumes mouse movement, so the only
+	-- thing that flag could do here is drop aim input.
+	UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
+			pendingDelta += Vector2.new(input.Delta.X, input.Delta.Y)
+		end
+	end)
+
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if processed or input.KeyCode ~= Config.Camera.ToggleKey then
 			return
@@ -415,13 +220,21 @@ function CameraController.Start()
 	end)
 
 	-- Camera priority runs after input is gathered and before the frame is drawn,
-	-- which is where a camera update belongs. On RenderStepped it would be one
-	-- frame stale by the time anything rendered.
+	-- which is where a camera update belongs. TargetReticle binds one priority later
+	-- so that its aim ray reads this frame's camera rather than last frame's.
 	RunService:BindToRenderStep("ClimberCamera", Enum.RenderPriority.Camera.Value, function(deltaTime: number)
 		local camera = activeCamera()
 		if not camera then
 			return
 		end
+
+		-- Re-asserted every frame rather than set once. The engine releases the lock
+		-- on focus loss, and a camera that stops turning after an alt-tab reads as a
+		-- frozen client rather than as a released mouse.
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+
+		applyMouseDelta()
+		updateThirdPersonAlpha(deltaTime)
 
 		local headPart = head
 		if not headPart then
@@ -429,19 +242,8 @@ function CameraController.Start()
 			return
 		end
 
-		updateStabilised(headPart, deltaTime)
-		updateFocusAlpha(deltaTime)
-		updateThirdPersonAlpha(deltaTime)
-
-		local pose = restPose(headPart)
-
-		-- Copied out before the guard so the narrowing holds across the call.
-		local limb = focusLimb
-		if limb and focusAlpha > 0 then
-			pose = blendPoses(pose, focusPose(limb, pose, deltaTime), ease(focusAlpha))
-		end
-
-		camera.CFrame = poseToCFrame(pose)
+		updateStabilisedPosition(headPart, deltaTime)
+		camera.CFrame = eyeCFrame(headPart)
 	end)
 end
 
