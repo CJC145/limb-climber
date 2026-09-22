@@ -4,21 +4,24 @@
     "$className": "DataModel",
 
     "ReplicatedStorage": {
-      "Shared": {
-        "$path": "src/shared"
+      "Climber": {
+        "$path": "src/shared/Climber"
       }
     },
 
     "ServerScriptService": {
-      "Server": {
-        "$path": "src/server"
+      "Climber": {
+        "$path": "src/server/Climber"
+      },
+      "Bootstrap": {
+        "$path": "src/server/Bootstrap.server.luau"
       }
     },
 
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "Client": {
-          "$path": "src/client"
+        "Climber": {
+          "$path": "src/client/Climber"
         }
       }
     },
