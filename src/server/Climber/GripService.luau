@@ -29,6 +29,13 @@ type LimbRuntime = {
 	limb: ClimberRig.Limb,
 	state: GripState,
 	stamina: number,
+
+	-- What the owning player is asking for, which is not the same as what the motor
+	-- is doing. A pull only drives while the limb is also Gripped; this stays true
+	-- through an exhaustion or a fall and takes effect again when the limb next takes
+	-- a hold, because the player is still holding the key.
+	pulling: boolean,
+
 	constraint: BallSocketConstraint?,
 	surfaceAttachment: Attachment?,
 }
@@ -85,6 +92,22 @@ local function broadcast(runtime: LimbRuntime)
 	Net.LimbState:FireAllClients(runtime.limb.limbId, runtime.state, runtime.stamina)
 end
 
+-- Drives the hinge motor when, and only when, the limb is both gripped and being
+-- pulled. Everything that can change either of those two facts routes through here.
+--
+-- The grip is what makes a pull mean anything. Motor torque is internal to the body,
+-- so an ungripped limb that pulls has nothing to push against and simply curls up on
+-- itself; the climber cannot lift itself by its own elbows any more than a person can
+-- lift themselves by their own belt. Gating on Gripped is therefore not a safety rule
+-- -- it is just declining to run a motor that could only produce a twitch.
+local function applyPull(runtime: LimbRuntime)
+	local driving = runtime.pulling and runtime.state == "Gripped"
+
+	runtime.limb.pullHinge.ActuatorType = if driving
+		then Enum.ActuatorType.Motor
+		else Enum.ActuatorType.None
+end
+
 -- A grip state change is an edge and goes out the moment it happens, unthrottled.
 -- The rate cap in Config.Net applies to the continuous stamina stream only: a HUD
 -- that showed a reach a tenth of a second late would be a worse limb-intent
@@ -96,6 +119,11 @@ local function setState(runtime: LimbRuntime, state: GripState)
 
 	runtime.state = state
 	broadcast(runtime)
+
+	-- Every route out of Gripped passes through here -- the player letting go,
+	-- stamina running out, a fall being called -- so the motor is switched off by
+	-- the same line whichever it was, and no caller has to remember to.
+	applyPull(runtime)
 end
 
 -- Tears down a grip completely. Criterion 8: nothing may survive a release.
@@ -253,9 +281,31 @@ local function step(deltaTime: number)
 	local drain = Config.Stamina.DrainPerLimbsGripped[gripped] or 0
 
 	for _, runtime in runtimes do
-		-- Drain is stated as a positive cost in Config, so it subtracts. The four-limb
-		-- row is negative and therefore adds, which is the doc's "regenerating".
-		local rate = if runtime.state == "Gripped" then -drain else Config.Stamina.RegenRate
+		local rate
+		if runtime.state ~= "Gripped" then
+			rate = Config.Stamina.RegenRate
+		else
+			-- Drain is stated as a positive cost in Config, so it subtracts. The
+			-- four-limb row is negative and therefore adds, which is the doc's
+			-- "regenerating".
+			local cost = drain
+
+			-- Hauling costs more than hanging. Floored at zero before the multiplier
+			-- because the four-limb row is a regeneration, and doubling a regeneration
+			-- would make pulling on all fours recover *faster* than resting there --
+			-- the opposite of a cost. Floored, it cancels the rest bonus instead,
+			-- which is the right reading: you can haul from the safest position, and
+			-- it stops being a rest while you do.
+			--
+			-- Per limb, not per body. A limb that is gripped but not pulling pays its
+			-- ordinary rate while the one next to it pays double.
+			if runtime.pulling then
+				cost = math.max(cost, 0) * Config.Stamina.PullMultiplier
+			end
+
+			rate = -cost
+		end
+
 		runtime.stamina = math.clamp(runtime.stamina + rate * deltaTime, 0, Config.Stamina.Max)
 	end
 
@@ -296,6 +346,22 @@ function GripService.GetState(limbId: LimbId): GripState?
 	return runtime and runtime.state or nil
 end
 
+-- Records that the owning player is holding the pull input, and engages the motor if
+-- the limb is in a position to use it.
+--
+-- Held rather than acted on once: the player keeps the key down and the joint keeps
+-- driving. Nothing here checks whether pulling is sensible, because there is no way
+-- for it not to be -- the worst an ungripped pull can do is curl the limb.
+function GripService.SetPull(limbId: LimbId, pulling: boolean)
+	local runtime = runtimes[limbId]
+	if not runtime or runtime.pulling == pulling then
+		return
+	end
+
+	runtime.pulling = pulling
+	applyPull(runtime)
+end
+
 -- How many limbs are bearing load. AnchorService asks, because a body with nothing
 -- gripped is the precondition for a fall.
 function GripService.GrippedCount(): number
@@ -312,7 +378,18 @@ function GripService.ReleaseAll()
 	for _, runtime in runtimes do
 		releaseGrip(runtime)
 		runtime.limb.align.Enabled = false
+
+		-- Cleared rather than left standing. A respawn is a hard reset of the body,
+		-- and a player still holding Shift from before the fall should not find their
+		-- arm hauling the instant it takes its next hold, several seconds and one
+		-- teleport later. They press again; the key is still under their finger.
+		runtime.pulling = false
+
 		setState(runtime, "Free")
+
+		-- setState only fires when the state actually changed, and a limb that was
+		-- already Free would not have had its motor stopped by the line above.
+		applyPull(runtime)
 	end
 end
 
@@ -335,9 +412,14 @@ function GripService.Bind(rig: ClimberRig.Rig)
 			limb = limb,
 			state = "Free",
 			stamina = Config.Stamina.Max,
+			pulling = false,
 			constraint = nil,
 			surfaceAttachment = nil,
 		}
+
+		-- Matches the ActuatorType ClimberRig.Build leaves the hinge at, so the record
+		-- and the constraint agree from the first frame.
+		limb.pullHinge.ActuatorType = Enum.ActuatorType.None
 	end
 
 	if stepConnection then

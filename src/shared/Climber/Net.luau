@@ -28,6 +28,16 @@ local Net = {
 	-- Client -> server: Types.LimbIntent fields, passed positionally.
 	LimbIntent = remote("LimbIntent"),
 
+	-- Client -> server: Types.LimbPull fields, passed positionally.
+	--
+	-- Separate from LimbIntent rather than another field on it, because the two are
+	-- different shapes of traffic. An intent streams every frame and carries where the
+	-- player is aiming; a pull is two events, one when the key goes down and one when
+	-- it comes up, and carries nothing but which way the switch went. Folding them
+	-- together would send an aim point ninety times a second for a limb that is
+	-- gripped and not aiming at anything.
+	LimbPull = remote("LimbPull"),
+
 	-- Server -> client: Types.LimbState fields, passed positionally.
 	LimbState = remote("LimbState"),
 }

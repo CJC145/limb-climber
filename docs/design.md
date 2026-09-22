@@ -158,6 +158,31 @@ Each limb has stamina that drains while bearing load and regenerates while resti
 
 This creates pacing, tension and a reason to plan routes — all from one number. It is also what makes the three-points-of-contact climbing rule emerge naturally rather than being taught.
 
+## Pulling: how the body goes up
+
+**Added 2026-09-22, after the phase 5 playtest. This was a gap in the document, not a tuning problem.** Everything above describes a body that can reach, grip, hang and fall. None of it describes a body that can *ascend*. Played, the climber hung from its holds and stayed exactly where it was: players could place a hand anywhere they liked and had no way to move the torso toward it. The document simply never said how the body goes up, and nobody noticed until there was one to try.
+
+**The mechanism is the hinge motors on the elbows and knees.** They already exist — every elbow and knee is a `HingeConstraint`, and a hinge can be actuated. Holding a pull input on a gripped limb switches its hinge to `ActuatorType.Motor`; letting go switches it back to `None`.
+
+| | Joint | Direction | What it does |
+| --- | --- | --- | --- |
+| **Arms** | Elbow | Flex | The hand is gripped above, the elbow closes, the torso is drawn up to the hold |
+| **Legs** | Knee | Extend | The foot is planted below, the knee straightens, the torso is driven up off it |
+
+**The asymmetry is the mechanic, not an inconsistency.** An arm pulls its body to its hand; a leg pushes its body off its foot. In the engine's terms both hinges rest at 0 and are limited to roughly `[0, 145]`, so flexion is the positive direction for either — which makes the arm's pull positive and the leg's push negative. A consequence to expect rather than debug: **a straight leg cannot push**, because zero is already its lower limit. The knee has to be bent first by stepping up onto a hold, which is also true of legs.
+
+### Why this needs no safety bound
+
+A motor applies equal and opposite torque to the two parts of its own joint, so it is **internal to the body**. With nothing gripped it can only spin a limb against the rest of the rig, and the climber curls up rather than climbing — it cannot lift itself by its own elbows any more than a person can lift themselves by their own belt. It moves the body only when a grip is holding one end of the chain to the world, and what does the lifting is then the mountain pushing back.
+
+This is the opposite situation to `AlignPosition.MaxForce`, which acts between a limb and a point in space, is therefore external, and needs an explicit bound to stop it flying the body. No arrangement of the pull numbers can produce that failure. **Nothing may add a force that acts on the torso directly** — that would reintroduce exactly the external force this design avoids, and it is the shortcut to watch for if ascending ever feels too weak.
+
+### Pulling is per player
+
+Each player drives only the limbs they own. In a four-player run nobody can ascend alone: an arm hauling while three limbs hang passive just loads them. **Ascending is therefore a coordination problem**, which is the game this document has been describing all along — and it is the first mechanic where decision 5's HUD indicator earns its place, because the thing players need to agree on is now a moment rather than a position.
+
+A pull costs stamina at a multiple of the ordinary drain for its row, so hauling is work and hanging is not. The four-limb row regenerates, and a pull there cancels the recovery rather than doubling it: you can haul from the safest position, and it stops being a rest while you do.
+
 ## Surfaces and tools
 
 ### Surfaces via CollectionService tags
@@ -273,6 +298,10 @@ Two properties make this readable rather than arbitrary: player 1 holds `ArmR` i
 
 **Keys.** `Q` / `E` / `Z` / `C` map to `ArmR` / `ArmL` / `LegR` / `LegL` and never rebind — the two-player split is exactly "Q + Z, then E + C" because Q/Z are the right side and E/C the left. A player who owns exactly one limb may additionally press `Space` for it, which is what the four-player row of the original key table meant.
 
+**`Shift` held with a limb key pulls with that limb** instead of reaching with it — see the pull mechanic above. It has to be a modifier on the limb key rather than a key of its own, because pull is per limb and a bare key could not say which. It also cannot be a second press of the limb key: holding a limb key is what *releases* that limb's grip, and a pull has nothing to haul on without one. The two gestures are opposites wearing the same key, so something has to tell them apart.
+
+Which gesture a press is gets decided when the key goes down and does not change while it is held. Letting go of `Shift` mid-pull does nothing; the limb key ends it. Re-resolving on the fly would turn a pull into a reach with no keypress, and a reach begins by dropping the hold that was being hauled on. `Space` carries the modifier like any other limb key, so a solo player's alias works in both modes rather than only one.
+
 **Run start.** With no lobby there has to be a defined moment when the session locks. The run starts `Config.Session.LobbyGraceSeconds` after the first player joins: everyone present at that instant is assigned, and the session locks per decision 1. Anyone arriving later is a spectator — camera and reticle, no limbs. If more than four players are present, the first four by join order are assigned and the rest spectate.
 
 ### Run lifecycle
@@ -348,6 +377,7 @@ Keep these small — they fire every frame a limb is active.
 | Event | Direction | Payload |
 | --- | --- | --- |
 | `LimbIntent` | Client to server | limbId, targetPosition (Vector3), aimOrigin (Vector3), isHeld (bool) |
+| `LimbPull` | Client to server | limbId, isPulling (bool) |
 | `LimbState` | Server to client | limbId, gripState, stamina |
 | `ToolUse` | Client to server | toolId, limbId |
 | `AnchorSet` | Server to client | anchorPosition |
@@ -357,6 +387,10 @@ Rate-limit `LimbIntent` server-side. It is the obvious exploit vector and the ob
 **`aimOrigin` was added to `LimbIntent` in phase 5** and is the one payload that grew. The server clamps every target into the reaching limb's own reach envelope, and doing that *along the aim ray* rather than radially is what keeps the clamped point on the line the player pointed down. Radial clamping — walking outward from the shoulder toward the target — brings an out-of-range point back at a sideways angle, so the hand lands somewhere the player did not aim and pointing at a distant hold stretches toward something beside it.
 
 Clamping along the ray needs the ray, and the ray starts at the camera's eye, which only the client knows. It grants a client nothing: every point the clamp can return is inside that limb's envelope either way, so a forged origin can only pick a target the limb could have reached honestly.
+
+**`LimbPull` is edge-triggered, not streamed**, which is why it is its own event rather than another field on `LimbIntent`. An intent streams every frame and carries where the player is aiming; a pull is two messages, one as the key goes down and one as it comes up, and carries nothing but which way the switch went. Folding them together would send an aim point ninety times a second for a limb that is gripped and not aiming at anything.
+
+The cost of edges is that a lost "stopped" leaves a motor running with nothing able to switch it off. So the rate limit throttles only the "pulling" edge and always honours the other — the same rule the held intent stream follows, for the same reason.
 
 **Limb ownership is not one of these events.** It replicates as a per-player attribute written only by `LimbAssignment`, which each client reads for itself. A RemoteEvent would be a second copy of the mapping, and the whole point of `LimbAssignment` is that there is no second copy.
 
@@ -371,7 +405,7 @@ AI is good at systems, logic and tuning loops. It is bad at 3D modelling, spatia
 | 2 | Full four-limb rig | Joint chain, limits, mass properties | **Model the climber rig** — 14 parts, correct proportions, attachment points placed |
 | 3 | Multiplayer assignment | LimbAssignment, input routing, RemoteEvents | Nothing |
 | 4 | Camera system | Stabilised mouse-look head-cam, third-person toggle | Judge the feel and report back — AI cannot evaluate this |
-| 5 | Stamina and falling | Drain rates, anchor respawn | Tune the numbers by playing |
+| 5 | Stamina and falling | Drain rates, anchor respawn, the pull mechanic | Tune the numbers by playing |
 | 6 | Tools and surfaces | CanGrip modifiers, anchor spawning | **Model each tool** — piton, rope, ice screw, gloves, hook |
 | 7 | Level design | Nothing | **The entire mountain** — geometry, tagging, tool placement, difficulty curve |
 

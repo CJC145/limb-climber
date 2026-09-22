@@ -209,6 +209,22 @@ Config.Stamina = {
 	},
 	RegenRate = 8,
 
+	-- What a pulling limb pays, as a multiple of its row above. Hauling is work and
+	-- hanging is not, so a pull that cost the same as a rest would make pulling the
+	-- default state and delete the choice.
+	--
+	-- ONE WRINKLE, because the four-limb row is negative. Multiplying a regeneration
+	-- makes it regenerate faster, which is the opposite of a cost, so a pulling limb's
+	-- rate is floored at zero before the multiplier is applied. Pulling on all fours
+	-- therefore cancels the rest bonus rather than draining, which is the intended
+	-- reading of that row: you can haul from the safest position and it stops being a
+	-- recovery while you do.
+	--
+	-- At 2.0 a pull costs what hanging cost before the last tuning pass -- five seconds
+	-- on one arm, ten on two. Guess, but a guess with a shape: the interesting number
+	-- is whether a full ascent is cheaper in two big pulls or four small ones.
+	PullMultiplier = 2.0,
+
 	-- A limb below this cannot grip at all. Without it, an exhausted limb re-grips on
 	-- the next key release, drains below zero on the following frame and tears the
 	-- grip down again -- churning a constraint pair every few frames for as long as
@@ -218,6 +234,35 @@ Config.Stamina = {
 	-- Guess, and a real feel dial: too high and a slip means a long wait, too low and
 	-- exhaustion stops meaning anything.
 	MinToGrip = 15,
+}
+
+-- Pulling: the hinge motors on the elbows and knees, and the only way the body goes
+-- up. Nothing here comes from the design doc, which had no ascent mechanism at all.
+--
+-- WHY THIS IS SAFE without a bound of the kind MaxForce needs. A motor applies equal
+-- and opposite torque to the two parts of its own joint, so it is internal to the
+-- body: with nothing gripped it can only spin a limb against the rest of the rig, and
+-- the climber curls up rather than climbing. It moves the body only when a grip is
+-- holding one end of the chain to the world, which is the mountain pushing back. No
+-- arrangement of these numbers can make a free-floating body rise.
+--
+-- That is also why nothing here is expressed as a fraction of the rig's weight the
+-- way the align force is. The torque a pull needs scales with weight *and* with limb
+-- length -- it is roughly body weight times the forearm -- so a weight fraction would
+-- not be scale-correct either, and there is no guarantee for it to enforce.
+Config.Pull = {
+	-- Guess, and the number most likely to be wrong. The scale to reason in: lifting
+	-- the body on one arm needs roughly the rig's weight times the forearm's length,
+	-- so with a weight in the low thousands and a forearm of a stud or two, this wants
+	-- to be thousands rather than tens. Too low and a pull does nothing on a loaded
+	-- limb; too high and the climber snaps upward like a mousetrap.
+	MotorMaxTorque = 6000,
+
+	-- Radians per second the joint sweeps while pulling. A 145 degree elbow is about
+	-- 2.5 radians end to end, so this is a little under a second for a full haul --
+	-- deliberate rather than snappy, because a body this heavy arriving instantly
+	-- reads as a glitch rather than as strength. Guess.
+	AngularVelocity = 3,
 }
 
 -- Falling. Nothing here comes from the design doc, which says only that a fall past
@@ -377,6 +422,7 @@ export type InputConfig = {
 	LimbKeys: { [LimbId]: Enum.KeyCode },
 	LimbOrder: { LimbId },
 	SoloLimbKey: Enum.KeyCode,
+	PullModifiers: { Enum.KeyCode },
 }
 
 local input: InputConfig = {
@@ -397,6 +443,16 @@ local input: InputConfig = {
 	-- rather than a rebind: it resolves to whichever single limb the presser owns,
 	-- and does nothing at all for anyone holding two or more.
 	SoloLimbKey = Enum.KeyCode.Space,
+
+	-- Held alongside a limb key to pull with that limb instead of reaching with it.
+	--
+	-- A modifier rather than a key of its own, because pull is per limb and a bare key
+	-- could not say which. It also has to be a modifier rather than a second press on
+	-- the limb key: holding a limb key *releases* that limb's grip, and a pull needs
+	-- the grip it would have thrown away.
+	--
+	-- Both shifts, so it does not matter which hand is free.
+	PullModifiers = { Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift },
 }
 
 Config.Input = input
@@ -430,6 +486,14 @@ Config.Net = {
 	-- unconditionally rather than on change, which is what a client that joined
 	-- mid-climb reads its opening state from.
 	LimbStateMaxPerSecond = 10,
+
+	-- LimbPull fires on key edges rather than per frame, so this is not a bandwidth
+	-- cap -- it is a ceiling on how fast a client may toggle a motor. Well above what
+	-- a hand can do to a key and far below what a script can.
+	--
+	-- Like LimbIntent, only the "pulling" edge is throttled. Dropping a "stopped"
+	-- would leave a motor running with nothing able to switch it off.
+	LimbPullMaxPerSecond = 20,
 
 	-- Per-player attribute prefix LimbAssignment publishes ownership through, so a
 	-- client knows which keys are its own. Written only by LimbAssignment.

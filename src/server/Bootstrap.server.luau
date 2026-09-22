@@ -33,11 +33,13 @@ GripService.Bind(rig)
 AnchorService.Bind(rig)
 
 local MIN_INTENT_INTERVAL = 1 / Config.Net.LimbIntentMaxPerSecond
+local MIN_PULL_INTERVAL = 1 / Config.Net.LimbPullMaxPerSecond
 
 -- Per player *and per limb*. A solo player holds up to four limbs at once and each
 -- one streams independently, so a single per-player budget would let whichever limb
 -- fired first in the window starve the rest.
 local lastIntentAt: { [Player]: { [Types.LimbId]: number } } = {}
+local lastPullAt: { [Player]: { [Types.LimbId]: number } } = {}
 
 local function isFinite(value: Vector3): boolean
 	for _, component in { value.X, value.Y, value.Z } do
@@ -105,6 +107,44 @@ Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targe
 	GripService.SetIntent(limb, clamped, isHeld)
 end)
 
+-- Pull is per player, not per body. A player may only drive the hinges of limbs they
+-- own, so in a four-player run nobody can ascend alone -- an arm hauling against
+-- three limbs nobody is pulling with just loads them. Coordinating the pull is the
+-- coordination problem the game is about, and this ownership check is where it is
+-- actually enforced.
+Net.LimbPull.OnServerEvent:Connect(function(player: Player, limbId: any, isPulling: any)
+	if typeof(limbId) ~= "string" or typeof(isPulling) ~= "boolean" then
+		return
+	end
+
+	local limb = limbId :: Types.LimbId
+	if GripService.GetState(limb) == nil then
+		return
+	end
+
+	if not LimbAssignment.OwnsLimb(player, limb) then
+		return
+	end
+
+	-- Only the starting edge is throttled, for the same reason the held intent stream
+	-- is and with worse consequences if it were not: a dropped "stopped" would leave
+	-- a motor running with no further message able to switch it off.
+	if isPulling then
+		local now = os.clock()
+
+		local perLimb = lastPullAt[player] or {}
+		lastPullAt[player] = perLimb
+
+		local last = perLimb[limb]
+		if last and now - last < MIN_PULL_INTERVAL then
+			return
+		end
+		perLimb[limb] = now
+	end
+
+	GripService.SetPull(limb, isPulling)
+end)
+
 Players.PlayerAdded:Connect(function(player)
 	-- ReplicationFocus normally defaults to the character's root part. There is no
 	-- character here, so without this the client has no focus and, under
@@ -120,11 +160,18 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
 	lastIntentAt[player] = nil
+	lastPullAt[player] = nil
 
 	-- Orphans are whatever the departing player held. They have new owners by the
 	-- time this returns, but a limb they quit mid-reach is still reaching, and the
 	-- intent stream that would have ended it left with them.
 	for _, limbId in LimbAssignment.PlayerLeft(player) do
+		-- A pull is worse than a stranded reach, because it is a held state with no
+		-- stream behind it: the key-up that would have ended it left with the player,
+		-- and the motor would drive until the limb happened to lose its grip. The new
+		-- owner inherits a limb at rest, not one already hauling.
+		GripService.SetPull(limbId, false)
+
 		GripService.AbandonReach(limbId)
 	end
 end)

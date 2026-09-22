@@ -38,6 +38,11 @@ export type Limb = {
 	-- Radius of that sphere, in studs: the limb's measured chain length scaled by
 	-- Config.Grip.ReachFraction.
 	reach: number,
+
+	-- The elbow or knee this limb pulls with, already carrying its torque and its
+	-- signed velocity. Switching it on is a matter of setting ActuatorType, which
+	-- GripService does when the limb is both gripped and pulling.
+	pullHinge: HingeConstraint,
 }
 
 export type Rig = {
@@ -193,6 +198,36 @@ type BallSocketSpec = {
 	Limit: number,
 }
 
+-- PULL DIRECTION --------------------------------------------------------------
+--
+-- Which way a hinge motor drives when the player pulls, as a sign on the configured
+-- angular velocity. Derived here rather than configured because it follows from the
+-- axis conventions above, and a number in Config would be a second place for those
+-- conventions to live and disagree from.
+--
+-- The derivation, since it is the thing most worth getting wrong quietly:
+--
+--   Both hinges are limited to [0, ~145] and both rest at 0, because HINGE_BACKWARD
+--   flips the knee's axis so its anatomical bend is the positive direction too. So
+--   for either joint, a positive angular velocity drives toward the upper limit,
+--   which is flexion -- elbow closing, knee folding.
+--
+--   An arm hauls by flexing: the hand is gripped above, the elbow closes, and the
+--   torso is drawn up toward the hold. That is the positive direction.
+--
+--   A leg pushes by *extending*: the foot is planted below, the knee straightens, and
+--   the torso is driven up away from it. That is the negative direction -- back
+--   toward the joint's zero.
+--
+-- The asymmetry is real and not a sign error. An arm pulls its body to its hand; a
+-- leg pushes its body off its foot.
+--
+-- A consequence worth expecting rather than debugging: a straight leg cannot push,
+-- because zero is already its lower limit and there is nothing to extend. The knee
+-- has to be bent first, by stepping up onto a hold. That is also true of legs.
+local PULL_FLEX = 1 -- elbows: haul the torso toward the hand
+local PULL_EXTEND = -1 -- knees: drive the torso off the foot
+
 type HingeSpec = {
 	Name: string,
 	Proximal: string,
@@ -201,6 +236,7 @@ type HingeSpec = {
 	Frame: CFrame,
 	Min: number,
 	Max: number,
+	PullDirection: number,
 }
 
 local function ballSocketSpec(name: string, proximal: string, distal: string, frame: CFrame, limit: number): BallSocketSpec
@@ -248,6 +284,7 @@ local HINGES: { HingeSpec } = {
 		Frame = HINGE_FORWARD,
 		Min = Config.JointLimits.Elbow.Min,
 		Max = Config.JointLimits.Elbow.Max,
+		PullDirection = PULL_FLEX,
 	},
 	{
 		Name = "ElbowL",
@@ -257,6 +294,7 @@ local HINGES: { HingeSpec } = {
 		Frame = HINGE_FORWARD,
 		Min = Config.JointLimits.Elbow.Min,
 		Max = Config.JointLimits.Elbow.Max,
+		PullDirection = PULL_FLEX,
 	},
 	{
 		Name = "KneeR",
@@ -266,6 +304,7 @@ local HINGES: { HingeSpec } = {
 		Frame = HINGE_BACKWARD,
 		Min = Config.JointLimits.Knee.Min,
 		Max = Config.JointLimits.Knee.Max,
+		PullDirection = PULL_EXTEND,
 	},
 	{
 		Name = "KneeL",
@@ -275,7 +314,18 @@ local HINGES: { HingeSpec } = {
 		Frame = HINGE_BACKWARD,
 		Min = Config.JointLimits.Knee.Min,
 		Max = Config.JointLimits.Knee.Max,
+		PullDirection = PULL_EXTEND,
 	},
+}
+
+-- Which hinge each limb pulls with: the elbow for an arm, the knee for a leg. The
+-- shoulders and hips are ball sockets and cannot be motored, which is the whole
+-- reason the pull lives at the middle joint of the chain.
+local LIMB_HINGE: { [LimbId]: string } = {
+	ArmR = "ElbowR",
+	ArmL = "ElbowL",
+	LegR = "KneeR",
+	LegL = "KneeL",
 }
 
 -- Which extremity carries each limb's AlignPosition and grip point. Structure
@@ -421,7 +471,9 @@ local function applyCollisionGroups(model: Model)
 	end
 end
 
-local function buildJoints(model: Model)
+-- Returns the hinges by spec name, because the limbs need to find their own again to
+-- pull with. The ball sockets are not returned: nothing switches one on later.
+local function buildJoints(model: Model): { [string]: HingeConstraint }
 	for _, spec in BALL_SOCKETS do
 		local proximal = findPart(model, spec.Proximal)
 		local attachment0 = findAttachment(proximal, spec.ProximalAttachment)
@@ -456,6 +508,8 @@ local function buildJoints(model: Model)
 		constraint.Parent = proximal
 	end
 
+	local hinges: { [string]: HingeConstraint } = {}
+
 	for _, spec in HINGES do
 		local proximal = findPart(model, spec.Proximal)
 		local attachment0 = findAttachment(proximal, spec.Attachment)
@@ -473,8 +527,24 @@ local function buildJoints(model: Model)
 		constraint.LimitsEnabled = true
 		constraint.LowerAngle = spec.Min
 		constraint.UpperAngle = spec.Max
+
+		-- The motor's settings are written once here and never touched again; the only
+		-- thing that changes at runtime is whether it is switched on. Limits still
+		-- apply while it drives, so a motored elbow stops at 145 rather than folding
+		-- the forearm through the upper arm.
+		constraint.MotorMaxTorque = Config.Pull.MotorMaxTorque
+		constraint.AngularVelocity = Config.Pull.AngularVelocity * spec.PullDirection
+
+		-- None, not Motor with a zero velocity. A motor asked to hold zero is still a
+		-- motor: it would spend MotorMaxTorque resisting every bend the ragdoll makes,
+		-- and the elbows and knees would stop hanging loose. Off means off.
+		constraint.ActuatorType = Enum.ActuatorType.None
+
 		constraint.Parent = proximal
+		hinges[spec.Name] = constraint
 	end
+
+	return hinges
 end
 
 -- FORCE -----------------------------------------------------------------------
@@ -735,7 +805,7 @@ function ClimberRig.Build(): Rig
 	-- which the modelled pose can still be read off the live parts.
 	captureRestPose(model, torso)
 
-	buildJoints(model)
+	local hinges = buildJoints(model)
 
 	-- Weighed after the densities are applied and before anything is asked to pull
 	-- against it: every force below is a multiple of this number.
@@ -775,6 +845,7 @@ function ClimberRig.Build(): Rig
 			align = align,
 			root = findAttachment(torso, spec.RootAttachment),
 			reach = measureReach(model, spec),
+			pullHinge = hinges[LIMB_HINGE[limbId]],
 		}
 	end
 

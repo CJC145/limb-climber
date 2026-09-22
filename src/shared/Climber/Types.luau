@@ -29,6 +29,17 @@ export type LimbIntent = {
 	isHeld: boolean,
 }
 
+-- Client -> server. Two of these per pull: one on the key down, one on the key up.
+--
+-- A held state sent as edges rather than as a per-frame stream, because a motor does
+-- not need re-asking to keep turning. The cost is that a lost "false" would leave a
+-- joint driving with nothing to stop it, which is why the server throttles only the
+-- "true" edge and always honours the other.
+export type LimbPull = {
+	limbId: LimbId,
+	isPulling: boolean,
+}
+
 -- Server -> client. Absolute stamina rather than a fraction: Config.Stamina.Max is
 -- shared, so a client that wants a 0..1 bar can divide, and a client that wants the
 -- number has it. Sending a fraction would throw away which of the two the reader
