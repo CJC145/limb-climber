@@ -2,6 +2,9 @@
 
 -- Shared type definitions. Phase 2 has the full four-limb rig, so all four limb
 -- ids exist; nothing beyond them does.
+--
+-- Phase 5 completes LimbState: stamina exists now, so the payload matches the design
+-- doc's table in full.
 
 export type LimbId = "ArmR" | "ArmL" | "LegR" | "LegL"
 
@@ -14,11 +17,14 @@ export type LimbIntent = {
 	isHeld: boolean,
 }
 
--- Server -> client. The design doc also lists `stamina` on this payload; stamina
--- is phase 5 and is not included here until it exists.
+-- Server -> client. Absolute stamina rather than a fraction: Config.Stamina.Max is
+-- shared, so a client that wants a 0..1 bar can divide, and a client that wants the
+-- number has it. Sending a fraction would throw away which of the two the reader
+-- gets to choose.
 export type LimbState = {
 	limbId: LimbId,
 	gripState: GripState,
+	stamina: number,
 }
 
 return {}

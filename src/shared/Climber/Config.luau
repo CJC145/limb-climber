@@ -77,24 +77,72 @@ Config.AlignPosition = {
 	MaxVelocity = 40,
 }
 
--- Stamina drain per second, keyed by how many limbs are currently gripped.
--- The design doc only gives qualitative rates ("very fast"/"fast"/"slow"/
--- "regenerating"); these numbers are guesses to be tuned in phase 5.
+-- Stamina drain per second for a gripped limb, keyed by how many limbs are gripped
+-- in total. The design doc only gives qualitative rates ("very fast"/"fast"/
+-- "slow"/"regenerating"); every number here is a guess and the whole table expects
+-- to be tuned by playing.
+--
+-- Note the sign on the four-limb row. The doc's fourth row is "regenerating", not
+-- "no drain", so it is a negative drain rather than a zero -- which keeps one code
+-- path across all four rows instead of special-casing the top one. It is deliberately
+-- smaller than RegenRate: hanging on all fours recovers, but not as fast as letting
+-- a limb rest.
+--
+-- There is no [0] row. Nothing drains when nothing is gripped.
 Config.Stamina = {
 	Max = 100,
 	DrainPerLimbsGripped = {
 		[1] = 20,
 		[2] = 10,
 		[3] = 4,
-		[4] = 0,
+		[4] = -6,
 	},
 	RegenRate = 8,
+
+	-- A limb below this cannot grip at all. Without it, an exhausted limb re-grips on
+	-- the next key release, drains below zero on the following frame and tears the
+	-- grip down again -- churning a constraint pair every few frames for as long as
+	-- the player keeps trying. It also gives exhaustion a recovery cost rather than
+	-- letting the player tap their way back up the wall.
+	--
+	-- Guess, and a real feel dial: too high and a slip means a long wait, too low and
+	-- exhaustion stops meaning anything.
+	MinToGrip = 15,
+}
+
+-- Falling. Nothing here comes from the design doc, which says only that a fall past
+-- the last anchor respawns the rig there; all three numbers are guesses.
+--
+-- Two triggers, because neither covers the other. In practice the timer is the one
+-- that usually fires -- a long drop from well above the anchor reaches freefall
+-- speed within a second, and waiting for it to also pass below the anchor would mean
+-- watching the whole descent first. The drop distance catches the opposite case: a
+-- slow slide or a tumble down a slope that never gets fast enough to count as
+-- freefall but still loses real height.
+Config.Fall = {
+	-- Studs below the anchor at which the rig respawns, regardless of how it got
+	-- there. Landing anywhere above this is just a fall you survived -- you carry on
+	-- climbing from where you stopped.
+	RespawnDropDistance = 25,
+
+	-- Downward speed, in studs per second, above which the torso counts as falling
+	-- rather than settling. Set above the speeds a body reaches while shifting its
+	-- weight on a hold, so ordinary climbing never starts the timer.
+	FreefallSpeed = 12,
+
+	-- How long the torso may fall continuously, with nothing gripped, before the fall
+	-- is called. Long enough to survive a drop onto a ledge a little below, short
+	-- enough that a fall into open air does not become a long wait.
+	MaxFreefallSeconds = 2.5,
 }
 
 -- Camera. Only the two blend timings come from the design doc; every other number
--- here is a guess and expects to be tuned by playing. They will be tuned twice --
--- the torso is still anchored until phase 5, so the head barely moves and nothing
--- below can be judged properly until the body can fall.
+-- here is a guess and expects to be tuned by playing.
+--
+-- The second tuning pass is now due. These were first set against an anchored torso,
+-- where the head barely moved; phase 5 unanchored it, so the follow rate and the
+-- third-person distance are being asked to do a job they have not yet been judged
+-- on -- keeping a view steady over a body that swings, drops and lands.
 Config.Camera = {
 	-- Radians of rotation per pixel of mouse movement. Roughly a full turn per
 	-- 2000 pixels. Guess, and the first thing to try if the view feels wrong.
@@ -111,6 +159,18 @@ Config.Camera = {
 	-- There is no rotation rate any more. Rotation is the mouse, undamped and 1:1 --
 	-- a view that lagged the hand moving it would feel broken rather than heavy.
 	PositionFollowRate = 14,
+
+	-- How far a tracked part may jump in one frame before the camera stops damping
+	-- and simply cuts to it.
+	--
+	-- Damping exists to absorb ragdoll jitter, which is small. A respawn is not
+	-- jitter: it teleports the body to the anchor, and damping that would drag the
+	-- view across the whole mountain at the follow rate. Above this distance the
+	-- movement cannot have been physical, so there is nothing to smooth.
+	--
+	-- Guess, but a wide margin rather than a fine one -- well above the studs a body
+	-- crosses in a single frame of a fast fall, well below any respawn worth calling.
+	SnapDistance = 8,
 
 	-- Where the eye sits relative to the head part. Clearance is measured from the
 	-- head's front face rather than its centre, so it stays outside the head
@@ -235,6 +295,17 @@ Config.Net = {
 	-- and a shared budget would have them starve each other. A player's ceiling is
 	-- therefore this times the number of limbs they own.
 	LimbIntentMaxPerSecond = 90,
+
+	-- LimbState carries stamina, which changes every frame, so the server cannot fire
+	-- it per frame the way the client fires intent. This is the rate the server
+	-- broadcasts all four limbs at. A grip state *change* is fired immediately and is
+	-- not subject to this -- the cap exists for the continuous number, not the edges.
+	--
+	-- Fast enough that a draining bar reads as draining rather than stepping, slow
+	-- enough that four limbs times however many clients stays negligible. Broadcast
+	-- unconditionally rather than on change, which is what a client that joined
+	-- mid-climb reads its opening state from.
+	LimbStateMaxPerSecond = 10,
 
 	-- Per-player attribute prefix LimbAssignment publishes ownership through, so a
 	-- client knows which keys are its own. Written only by LimbAssignment.

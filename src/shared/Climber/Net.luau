@@ -3,8 +3,10 @@
 -- RemoteEvent definitions. The server creates them on first require; the client
 -- waits for them to replicate.
 --
--- The design doc also specifies ToolUse and AnchorSet. Those belong to phases 5
--- and 6 and are not created here until something fires them.
+-- The design doc also specifies ToolUse and AnchorSet. Both belong to phase 6 and
+-- are not created here until something fires them. AnchorSet in particular is
+-- tempting to add now that AnchorService exists, but nothing places an anchor until
+-- tools do -- phase 5's anchor is the start position and no client needs telling.
 
 local RunService = game:GetService("RunService")
 
