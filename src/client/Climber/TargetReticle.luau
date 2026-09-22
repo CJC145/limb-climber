@@ -75,9 +75,10 @@ function TargetReticle.Start()
 		params.FilterDescendantsInstances = { rig }
 	end)
 
-	-- Same reasoning as CameraController: the phase 1 torso is anchored at
-	-- SpawnPosition, so the clamp origin is known without replication. This has to
-	-- read the live torso once the torso can move.
+	-- The torso is still anchored at SpawnPosition, so the clamp origin is known
+	-- without replication. This has to read the live torso once the torso can move,
+	-- which is phase 5. (CameraController used to share this workaround for the
+	-- camera position; phase 4 removed it there -- the head-cam reads the live Head.)
 	local origin = Config.Rig.SpawnPosition
 
 	RunService.RenderStepped:Connect(function()
