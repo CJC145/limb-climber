@@ -2,10 +2,18 @@
 
 -- Grip and release, constraint creation, stamina.
 --
--- Stamina is phase 5 and is not here yet. What is here is the grip state machine
--- and CanGrip, which every surface and every future tool must route through.
+-- Phase 5 adds stamina to the grip state machine already here. The two are one
+-- system rather than two: stamina is what a grip costs, and exhaustion is one of the
+-- two edges out of Gripped in the design doc's state diagram -- the other being the
+-- player pressing the key.
+--
+-- The drain rate is keyed by how many limbs are gripped *in total*, not by anything
+-- about the limb paying it. That is the whole of the design doc's pacing mechanic:
+-- hanging by one hand is expensive because there is one hand, and the three-points-
+-- of-contact rule emerges from the arithmetic rather than from being taught.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Climber.Config)
 local Net = require(ReplicatedStorage.Climber.Net)
@@ -20,6 +28,7 @@ type GripState = Types.GripState
 type LimbRuntime = {
 	limb: ClimberRig.Limb,
 	state: GripState,
+	stamina: number,
 	constraint: BallSocketConstraint?,
 	surfaceAttachment: Attachment?,
 }
@@ -29,12 +38,30 @@ local GripService = {}
 local rigModel: Model? = nil
 local runtimes: { [LimbId]: LimbRuntime } = {}
 
+-- Heartbeat is connected in Bind and held so a rebind cannot leave two of them
+-- running and drain every limb at twice the configured rate.
+local stepConnection: RBXScriptConnection? = nil
+
 -- The one function every grip decision flows through. Surfaces and tools are
 -- modifiers passed in here; nothing anywhere else may special-case either.
 --
--- `equippedTools` is accepted and unused in phase 1 -- the shared inventory and
--- every tool that would modify a grip are phase 6.
+-- Stamina is checked here too, and deliberately not through a new argument: it is
+-- per-limb state this module already owns, so `limb` is enough to look it up. The
+-- signature in the design doc stays as written and the invariant holds -- there is
+-- still exactly one place that decides whether a grip may happen.
+--
+-- `equippedTools` is accepted and unused until phase 6 brings the shared inventory
+-- and the tools that would modify a grip.
 function GripService.CanGrip(limb: LimbId, surfacePart: BasePart, equippedTools: { string }): (boolean, number)
+	-- An exhausted limb cannot grip until it has recovered past the threshold. Without
+	-- this, a limb at zero re-grips on the next key release and exhausts again on the
+	-- following frame, churning a constraint pair for as long as the player keeps
+	-- pressing -- and exhaustion would cost nothing but a tap.
+	local runtime = runtimes[limb]
+	if runtime and runtime.stamina < Config.Stamina.MinToGrip then
+		return false, 0
+	end
+
 	local surface = SurfaceConfig.GetProperties(surfacePart)
 	if not surface then
 		return false, 0
@@ -54,13 +81,21 @@ function GripService.CanGrip(limb: LimbId, surfacePart: BasePart, equippedTools:
 	return true, strength
 end
 
+local function broadcast(runtime: LimbRuntime)
+	Net.LimbState:FireAllClients(runtime.limb.limbId, runtime.state, runtime.stamina)
+end
+
+-- A grip state change is an edge and goes out the moment it happens, unthrottled.
+-- The rate cap in Config.Net applies to the continuous stamina stream only: a HUD
+-- that showed a reach a tenth of a second late would be a worse limb-intent
+-- indicator than one that showed nothing.
 local function setState(runtime: LimbRuntime, state: GripState)
 	if runtime.state == state then
 		return
 	end
 
 	runtime.state = state
-	Net.LimbState:FireAllClients(runtime.limb.limbId, state)
+	broadcast(runtime)
 end
 
 -- Tears down a grip completely. Criterion 8: nothing may survive a release.
@@ -181,9 +216,92 @@ function GripService.AbandonReach(limbId: LimbId)
 	setState(runtime, "Free")
 end
 
+-- STAMINA ---------------------------------------------------------------------
+
+local BROADCAST_INTERVAL = 1 / Config.Net.LimbStateMaxPerSecond
+local broadcastCountdown = 0
+
+local function grippedCount(): number
+	local count = 0
+	for _, runtime in runtimes do
+		if runtime.state == "Gripped" then
+			count += 1
+		end
+	end
+	return count
+end
+
+local function step(deltaTime: number)
+	local gripped = grippedCount()
+
+	-- Nil at zero, and correctly so: the table has no row for "nothing gripped"
+	-- because nothing is paying. The value is only read by gripped limbs, of which
+	-- there are none.
+	local drain = Config.Stamina.DrainPerLimbsGripped[gripped] or 0
+
+	for _, runtime in runtimes do
+		-- Drain is stated as a positive cost in Config, so it subtracts. The four-limb
+		-- row is negative and therefore adds, which is the doc's "regenerating".
+		local rate = if runtime.state == "Gripped" then -drain else Config.Stamina.RegenRate
+		runtime.stamina = math.clamp(runtime.stamina + rate * deltaTime, 0, Config.Stamina.Max)
+	end
+
+	-- Exhaustion resolves in a second pass so that every limb drains against the same
+	-- gripped count. Releasing inside the loop above would make the cost of the frame
+	-- depend on the order Luau happened to walk the table -- the second limb to be
+	-- visited would pay a cheaper rate than the first because the first had just let
+	-- go, and which limb that was would vary between runs.
+	for _, runtime in runtimes do
+		if runtime.state == "Gripped" and runtime.stamina <= 0 then
+			releaseGrip(runtime)
+			setState(runtime, "Free")
+		end
+	end
+
+	broadcastCountdown -= deltaTime
+	if broadcastCountdown <= 0 then
+		broadcastCountdown = BROADCAST_INTERVAL
+		for _, runtime in runtimes do
+			broadcast(runtime)
+		end
+	end
+end
+
+--------------------------------------------------------------------------------
+
 function GripService.GetState(limbId: LimbId): GripState?
 	local runtime = runtimes[limbId]
 	return runtime and runtime.state or nil
+end
+
+-- How many limbs are bearing load. AnchorService asks, because a body with nothing
+-- gripped is the precondition for a fall.
+function GripService.GrippedCount(): number
+	return grippedCount()
+end
+
+-- Settles every limb to Free with nothing attached to it. Called before a respawn
+-- moves the rig: a grip is a constraint to a surface elsewhere on the mountain, and
+-- teleporting one end of one across the level is how a physics explosion starts.
+--
+-- Unlike AbandonReach this covers gripped limbs too, and unlike a release it is not
+-- a grip attempt -- a fall does not end in a hold.
+function GripService.ReleaseAll()
+	for _, runtime in runtimes do
+		releaseGrip(runtime)
+		runtime.limb.align.Enabled = false
+		setState(runtime, "Free")
+	end
+end
+
+-- The other half of a respawn, per the design doc: the rig comes back at the anchor
+-- "with stamina restored". Broadcast immediately rather than left to the next tick,
+-- so the bars refill on the same frame the body reappears.
+function GripService.RestoreStamina()
+	for _, runtime in runtimes do
+		runtime.stamina = Config.Stamina.Max
+		broadcast(runtime)
+	end
 end
 
 function GripService.Bind(rig: ClimberRig.Rig)
@@ -194,10 +312,17 @@ function GripService.Bind(rig: ClimberRig.Rig)
 		runtimes[limbId] = {
 			limb = limb,
 			state = "Free",
+			stamina = Config.Stamina.Max,
 			constraint = nil,
 			surfaceAttachment = nil,
 		}
 	end
+
+	if stepConnection then
+		stepConnection:Disconnect()
+	end
+	broadcastCountdown = 0
+	stepConnection = RunService.Heartbeat:Connect(step)
 end
 
 return GripService
