@@ -66,6 +66,10 @@ local head: BasePart? = nil
 local torso: BasePart? = nil
 local extremities: { [LimbId]: BasePart } = {}
 
+-- For the focus-cam's nearest-surface query. The climber is excluded or the answer
+-- is always the climber's own limbs.
+local surfaceParams: OverlapParams? = nil
+
 local function resolveRig()
 	local model = workspace:WaitForChild(Config.Rig.ModelName)
 
@@ -74,11 +78,49 @@ local function resolveRig()
 		extremities[limbId] = model:WaitForChild(partName) :: BasePart
 	end
 
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { model }
+	surfaceParams = params
+
 	torso = resolvedTorso
 
 	-- Assigned last on purpose: the render loop tests `head` alone to decide whether
 	-- the rig is usable, which is only true if everything else is already in place.
 	head = model:WaitForChild("Head") :: BasePart
+end
+
+-- The closest point on the nearest thing that is not the climber, or nil if there
+-- is nothing within range.
+--
+-- Pure geometry. It does not ask whether the surface is grippable, and it must not
+-- start: that question belongs to CanGrip and nowhere else. Where the camera should
+-- face is a framing decision, not a grip decision, so the two never meet.
+local function nearestSurfacePoint(origin: Vector3): Vector3?
+	local params = surfaceParams
+	if not params then
+		return nil
+	end
+
+	local candidates = workspace:GetPartBoundsInRadius(origin, Config.Camera.FocusSearchRadius, params)
+
+	local best: Vector3? = nil
+	local bestDistance = math.huge
+
+	-- Narrowed rather than assumed, matching GripService's query: the bounds call is
+	-- typed as returning plain Instances even though it only ever hands back parts.
+	for _, candidate in candidates do
+		if candidate:IsA("BasePart") then
+			local point = candidate:GetClosestPointOnSurface(origin)
+			local distance = (point - origin).Magnitude
+			if distance < bestDistance then
+				best = point
+				bestDistance = distance
+			end
+		end
+	end
+
+	return best
 end
 
 -- MATHS ----------------------------------------------------------------------
@@ -177,6 +219,13 @@ local thirdPersonEnabled = false
 -- finishes or the camera would cut rather than return.
 local focusLimb: LimbId? = nil
 
+-- The damped direction from the body toward the surface it is climbing, which is
+-- the axis the focus vantage sits on. Reset between focuses so each one acquires
+-- the wall fresh rather than easing out of wherever the last one left off.
+local wallYaw = 0
+local wallPitch = 0
+local wallTracking = false
+
 -- The camera this module has already put into Scriptable mode. Re-read every frame
 -- rather than captured once: if the engine ever swaps CurrentCamera out from under
 -- us, a captured reference means writing CFrames to a camera nobody is looking
@@ -221,34 +270,69 @@ local function restPose(headPart: BasePart): Pose
 end
 
 -- Not mounted on the limb. The design doc rules that out explicitly, and a camera
--- bolted to a swinging arm is unusable regardless. This finds a vantage that frames
--- the limb and the space it is reaching into, from behind and to that limb's side,
--- so the limb sits in the foreground and its target area beyond it.
-local function focusPose(limbId: LimbId, rest: Pose): Pose
+-- bolted to a swinging arm is unusable regardless.
+--
+-- The vantage is wall-facing: it sits behind the body on the body-to-surface axis,
+-- so the surface is in front of the player and the limb reaches out toward it. Two
+-- things fall out of that for free. The camera always moves *away* from the nearest
+-- thing, so this vantage is much harder to bury in geometry than one that picks a
+-- direction for other reasons. And the player can see where the limb is landing,
+-- which is the entire point of shifting the view.
+local function focusPose(limbId: LimbId, rest: Pose, deltaTime: number): Pose
 	local extremity = extremities[limbId]
 	local bodyPart = torso
 	if not extremity or not bodyPart then
 		return rest
 	end
 
-	-- Centred between body and limb rather than on the extremity, per FocusBias:
-	-- centring on the extremity alone would track a moving part and reintroduce
-	-- exactly the motion the head-cam damping exists to remove.
-	local focusPoint = bodyPart.Position:Lerp(extremity.Position, Config.Camera.FocusBias)
+	local body = bodyPart.Position
+	local surfacePoint = nearestSurfacePoint(body)
 
-	-- Built from the stabilised orientation rather than the raw head, so the
-	-- vantage inherits the damping instead of needing its own.
-	local rotation = rotationOf(rest)
+	if not surfacePoint then
+		-- Nothing within range to climb. Pull back behind the body and hold the
+		-- head-cam's own orientation, since with no surface there is no landing spot
+		-- to frame and nothing better to point at.
+		wallTracking = false
 
-	-- RightVector is horizontal for any roll-free rotation, so the step toward the
-	-- limb's shoulder never tilts the vantage out of the plane it should be in.
-	local side = if Config.Rig.Side[limbId] == "Right" then 1 else -1
+		local rotation = rotationOf(rest)
+		return {
+			position = body
+				- rotation.LookVector * Config.Camera.FocusDistance
+				+ Vector3.yAxis * Config.Camera.FocusHeight,
+			yaw = rest.yaw,
+			pitch = rest.pitch,
+		}
+	end
 
-	local vantage = focusPoint
-		- rotation.LookVector * Config.Camera.FocusDistance
-		+ rotation.RightVector * (side * Config.Camera.FocusShoulderOffset)
+	-- Damped, and this one is not optional. The nearest-surface query changes its
+	-- answer the instant one part overtakes another, which on real geometry happens
+	-- mid-hold and without warning. Undamped, the vantage would jump the moment the
+	-- body drifted across a seam between two blocks of the same wall.
+	local targetYaw, targetPitch = anglesFromDirection(surfacePoint - body, rest.yaw, rest.pitch)
+
+	if wallTracking then
+		local alpha = smoothAlpha(Config.Camera.WallFollowRate, deltaTime)
+		wallYaw = lerpAngle(wallYaw, targetYaw, alpha)
+		wallPitch += (targetPitch - wallPitch) * alpha
+	else
+		-- First frame of a focus: take the wall direction as found. The blend is
+		-- what carries the camera there, so damping the acquisition too would just
+		-- make the move arrive late.
+		wallTracking = true
+		wallYaw = targetYaw
+		wallPitch = targetPitch
+	end
+
+	local toSurface = CFrame.fromEulerAnglesYXZ(wallPitch, wallYaw, NO_ROLL).LookVector
+
+	local vantage = body
+		- toSurface * Config.Camera.FocusDistance
 		+ Vector3.yAxis * Config.Camera.FocusHeight
 
+	-- Aimed between the limb and the surface rather than at either. At the surface
+	-- alone a limb reaching wide leaves the frame; at the limb alone the shot is a
+	-- close-up of a hand with no indication of what it is reaching for.
+	local focusPoint = extremity.Position:Lerp(surfacePoint, Config.Camera.FocusWallBias)
 	local yaw, pitch = anglesFromDirection(focusPoint - vantage, rest.yaw, rest.pitch)
 
 	return { position = vantage, yaw = yaw, pitch = pitch }
@@ -297,6 +381,7 @@ local function updateFocusAlpha(deltaTime: number)
 	focusAlpha = approach(focusAlpha, 0, deltaTime / math.max(Config.Camera.FocusBlendOut, MIN_BLEND))
 	if focusAlpha <= 0 then
 		focusLimb = nil
+		wallTracking = false
 	end
 end
 
@@ -353,7 +438,7 @@ function CameraController.Start()
 		-- Copied out before the guard so the narrowing holds across the call.
 		local limb = focusLimb
 		if limb and focusAlpha > 0 then
-			pose = blendPoses(pose, focusPose(limb, pose), ease(focusAlpha))
+			pose = blendPoses(pose, focusPose(limb, pose, deltaTime), ease(focusAlpha))
 		end
 
 		camera.CFrame = poseToCFrame(pose)

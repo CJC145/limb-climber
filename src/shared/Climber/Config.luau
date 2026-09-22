@@ -122,18 +122,29 @@ Config.Camera = {
 	-- limit means the head alone never gets near this; the focus vantage can.
 	MaxPitch = 80,
 
-	-- Focus-cam framing. The vantage sits back from, above, and to the limb's own
-	-- side of the point being framed -- behind the limb looking past it at where it
-	-- is going, rather than across the body at it.
+	-- Focus-cam framing. The vantage sits behind the body on the axis from the body
+	-- to the nearest surface, and slightly above it, so the surface is in front of
+	-- the player and the limb reaches out toward it.
 	FocusDistance = 7,
-	FocusShoulderOffset = 3.5,
 	FocusHeight = 2,
 
-	-- What the focus-cam centres on, along the line from torso to extremity.
-	-- 0 frames the body, 1 frames the hand or foot alone. Off 1 on purpose: the
-	-- doc asks for the limb *and its reachable area*, and a camera centred on the
-	-- extremity alone tracks a swinging part, which is the thing being avoided.
-	FocusBias = 0.7,
+	-- How far from the torso to look for that surface. Wide enough to still find
+	-- the wall while hanging off it at arm's length, narrow enough not to lock onto
+	-- distant scenery -- and, at the current spawn height, not to find the baseplate
+	-- 20 studs below.
+	FocusSearchRadius = 12,
+
+	-- How quickly the vantage follows the surface direction. The nearest-surface
+	-- answer changes the instant one part overtakes another, so this is damped for
+	-- the same reason the head is: without it the camera jumps whenever the body
+	-- drifts across a seam between two blocks of the same wall.
+	WallFollowRate = 3,
+
+	-- What the focus-cam aims at, along the line from the extremity to the surface
+	-- point. 0 is the limb alone, which is a close-up of a hand with no indication
+	-- of what it is reaching for; 1 is the surface alone, which loses a limb that
+	-- reaches wide. The useful shot is between them.
+	FocusWallBias = 0.5,
 
 	-- Third-person rest pose, measured back from the eye along the stabilised look
 	-- direction.
@@ -253,9 +264,9 @@ Config.Net = {
 -- on part sizes, part positions and attachment positions. Nothing in code writes
 -- them, so there is nothing here to tune.
 --
--- Extremity and Side are structure rather than tuning, and would sit in ClimberRig
--- with the rest of the rig topology if the server were the only reader. Phase 4's
--- focus-cam is a second reader on the client, which cannot require anything under
+-- Extremity is structure rather than tuning, and would sit in ClimberRig with the
+-- rest of the rig topology if the server were the only reader. Phase 4's focus-cam
+-- is a second reader on the client, which cannot require anything under
 -- ServerScriptService, and a mapping this small is exactly the kind that gets
 -- copied and then drifts. One copy, here, read by both.
 --
@@ -267,7 +278,6 @@ export type RigConfig = {
 	SpawnPosition: Vector3,
 	TemplateName: string,
 	Extremity: { [LimbId]: string },
-	Side: { [LimbId]: string },
 }
 
 local rig: RigConfig = {
@@ -285,16 +295,6 @@ local rig: RigConfig = {
 		ArmL = "HandL",
 		LegR = "FootR",
 		LegL = "FootL",
-	},
-
-	-- Which side of the body each limb is on, so the focus-cam knows which way to
-	-- step to get behind it. Spelled out rather than read off the limb id's last
-	-- letter, because that trick breaks silently the day a limb is renamed.
-	Side = {
-		ArmR = "Right",
-		ArmL = "Left",
-		LegR = "Right",
-		LegL = "Left",
 	},
 }
 
