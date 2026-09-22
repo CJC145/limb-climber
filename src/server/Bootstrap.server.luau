@@ -5,6 +5,10 @@
 --
 -- Phase 3 replaces phase 1's "first player in takes everything" with a real roster.
 -- The rules and the lock live in LimbAssignment; what is here is the wiring.
+--
+-- Phase 5 adds AnchorService to that wiring and nothing else. Stamina and falling are
+-- continuous, so both run off their own heartbeats inside the modules that own them
+-- rather than off a loop here.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,6 +18,7 @@ local Config = require(ReplicatedStorage.Climber.Config)
 local Net = require(ReplicatedStorage.Climber.Net)
 local Types = require(ReplicatedStorage.Climber.Types)
 
+local AnchorService = require(ServerScriptService.Climber.AnchorService)
 local ClimberRig = require(ServerScriptService.Climber.ClimberRig)
 local GripService = require(ServerScriptService.Climber.GripService)
 local LimbAssignment = require(ServerScriptService.Climber.LimbAssignment)
@@ -21,7 +26,11 @@ local LimbAssignment = require(ServerScriptService.Climber.LimbAssignment)
 Players.CharacterAutoLoads = false
 
 local rig = ClimberRig.Build()
+
+-- GripService first. AnchorService reads the gripped count on every heartbeat and
+-- would see an unbound service on the frame between the two otherwise.
 GripService.Bind(rig)
+AnchorService.Bind(rig)
 
 local MIN_INTENT_INTERVAL = 1 / Config.Net.LimbIntentMaxPerSecond
 

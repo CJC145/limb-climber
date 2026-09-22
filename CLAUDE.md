@@ -15,7 +15,7 @@ If anything below contradicts it, the design document wins.
 ## Current phase
 
     PHASE: 5
-    STATUS: not started
+    STATUS: built, awaiting tuning playtest
 
 Update this block when a phase is accepted. Build only the current phase.
 

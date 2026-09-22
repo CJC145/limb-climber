@@ -11,7 +11,10 @@
 --
 --   * Position still follows the Head part with light damping. This is the whole of
 --     the remaining stabilisation and it is the half that was always doing the work:
---     the head bobs and jerks with the ragdoll, and the camera must not.
+--     the head bobs and jerks with the ragdoll, and the camera must not. Phase 5
+--     unanchored the torso, so it is finally being asked to do that job over a body
+--     that swings, falls and lands rather than one pinned in the air -- and it gained
+--     one exception, for the teleport a respawn performs. See `follow`.
 --   * The up vector is still hard-locked to world up. The view never rolls, ever.
 --     Roll is not damped toward zero -- yaw and pitch are the only two numbers this
 --     module keeps, so roll has nowhere to live. See NO_ROLL.
@@ -198,6 +201,23 @@ local function applyMouseDelta()
 	pitch = math.clamp(pitch - delta.Y * Config.Camera.MouseSensitivity, -MAX_PITCH, MAX_PITCH)
 end
 
+-- Damps toward a part, except when it has plainly teleported.
+--
+-- Phase 5 is what makes the exception necessary. A respawn puts the body back at the
+-- anchor in one frame, and damping a jump like that would send the camera sailing
+-- across the level at the follow rate, through whatever is in between, for as long
+-- as it took to arrive. Nothing about that reads as stabilisation.
+--
+-- The test is distance rather than a signal from the server, because the camera does
+-- not need to know *why* a part moved that far. No physical motion covers
+-- SnapDistance in a frame, so anything that did was a teleport.
+local function follow(current: Vector3, target: Vector3, alpha: number): Vector3
+	if (target - current).Magnitude > Config.Camera.SnapDistance then
+		return target
+	end
+	return current:Lerp(target, alpha)
+end
+
 local function updateStabilisedPositions(headPart: BasePart, torsoPart: BasePart, deltaTime: number)
 	if not tracking then
 		tracking = true
@@ -207,8 +227,8 @@ local function updateStabilisedPositions(headPart: BasePart, torsoPart: BasePart
 	end
 
 	local alpha = smoothAlpha(Config.Camera.PositionFollowRate, deltaTime)
-	stabilisedHead = stabilisedHead:Lerp(headPart.Position, alpha)
-	stabilisedTorso = stabilisedTorso:Lerp(torsoPart.Position, alpha)
+	stabilisedHead = follow(stabilisedHead, headPart.Position, alpha)
+	stabilisedTorso = follow(stabilisedTorso, torsoPart.Position, alpha)
 end
 
 local function updateThirdPersonAlpha(deltaTime: number)

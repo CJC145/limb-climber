@@ -84,20 +84,21 @@ function TargetReticle.Start()
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 
-	-- Waits for the rig model only, never for a part inside it, and off the main
-	-- path so the dot draws from the first frame. FilterDescendantsInstances is
-	-- evaluated per cast, so rig parts are excluded as they arrive without this
-	-- having to wait for any of them.
+	-- The clamp origin. Phase 5 unanchored the torso, so this is a live part now
+	-- rather than the constant it used to be: the reach limit is measured from where
+	-- the body actually is, and a body that has swung or fallen since the last frame
+	-- has moved its own reach with it.
+	local torso: BasePart? = nil
+
+	-- Waits for the rig model off the main path so the dot draws from the first frame.
+	-- FilterDescendantsInstances is evaluated per cast, so rig parts are excluded as
+	-- they arrive without this having to wait for any of them; the torso is waited for
+	-- afterwards because the clamp is the one thing here that does need a part.
 	task.spawn(function()
 		local rig = workspace:WaitForChild(Config.Rig.ModelName)
 		params.FilterDescendantsInstances = { rig }
+		torso = rig:WaitForChild("Torso") :: BasePart
 	end)
-
-	-- The torso is still anchored at SpawnPosition, so the clamp origin is known
-	-- without replication. This has to read the live torso once the torso can move,
-	-- which is phase 5. (CameraController used to share this workaround for the
-	-- camera position; phase 4 removed it there -- the head-cam reads the live Head.)
-	local origin = Config.Rig.SpawnPosition
 
 	-- Bound one priority after CameraController rather than on RenderStepped, which
 	-- runs before it. On RenderStepped this would aim down last frame's camera, and
@@ -138,6 +139,10 @@ function TargetReticle.Start()
 		local hit = workspace:Raycast(eye, direction * reach, params)
 
 		local aim = if hit then hit.Position else eye + direction * reach
+
+		-- SpawnPosition only for the few frames before the rig replicates. Once the
+		-- torso is in hand this never reads Config for a position again.
+		local origin = if torso then torso.Position else Config.Rig.SpawnPosition
 		targetPosition = clampToReach(aim, origin)
 	end)
 end

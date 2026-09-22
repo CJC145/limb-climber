@@ -10,6 +10,9 @@
 -- things a saved model cannot carry -- constraints, mass properties, collision groups
 -- and network ownership -- plus attachment *orientation*, which is a constraint frame
 -- rather than a placement decision. See ORIENTATION below.
+--
+-- Phase 5 unanchors the torso, so this module also owns the other half of that: the
+-- rest pose the rig returns to when AnchorService calls a fall. See RESPAWN.
 
 local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -350,6 +353,59 @@ local function bindTunable(model: Model, name: string, value: number, apply: (nu
 	end)
 end
 
+-- RESPAWN ---------------------------------------------------------------------
+--
+-- The pose the rig returns to, captured once at Build from the modelled rest pose:
+-- the torso's rotation, and every part's CFrame relative to the torso.
+--
+-- Module-level rather than carried on the Rig record, which is how `rigModel` is
+-- held in GripService and for the same reason -- there is one climber, and threading
+-- its private respawn state through a shared type would put it in front of every
+-- module that only wants the limbs.
+--
+-- Restoring the pose matters. A rig that has fallen is a heap, and translating the
+-- heap to the anchor respawns the climber face down in a pile of its own legs. The
+-- rest pose is also the one arrangement that satisfies every joint constraint
+-- exactly, so reapplying it cannot leave a constraint violated on the first frame.
+local spawnRotation = CFrame.identity
+local restPose: { [BasePart]: CFrame } = {}
+
+local function captureRestPose(model: Model, torso: BasePart)
+	spawnRotation = torso.CFrame.Rotation
+	restPose = {}
+
+	local inverse = torso.CFrame:Inverse()
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			restPose[descendant] = inverse * descendant.CFrame
+		end
+	end
+end
+
+-- Puts the rig back at `position` in its rest pose, at rest.
+--
+-- Callers must tear down every grip first. A grip is a BallSocketConstraint to a
+-- surface somewhere else on the mountain, and teleporting one end of it across the
+-- level is how a physics explosion starts.
+--
+-- Velocities are zeroed per part rather than once on the torso. Ball sockets and
+-- hinges do not weld parts into a shared assembly the way a Motor6D or a weld would,
+-- so each of the 14 parts is its own assembly and carries its own velocity -- the
+-- same reason ClaimOwnership has to walk all of them.
+function ClimberRig.PlaceAt(rig: Rig, position: Vector3)
+	local base = CFrame.new(position) * spawnRotation
+
+	for part, relative in restPose do
+		part.CFrame = base * relative
+		part.AssemblyLinearVelocity = Vector3.zero
+		part.AssemblyAngularVelocity = Vector3.zero
+	end
+
+	-- Re-applied because a respawn is exactly the moment the engine may hand a part
+	-- to a client. Cheap, and the failure it prevents is a silent desync.
+	ClimberRig.ClaimOwnership(rig.model)
+end
+
 -- Anchored parts are server-simulated by definition, and SetNetworkOwner throws when
 -- called on one. Everything that actually simulates gets claimed.
 function ClimberRig.ClaimOwnership(model: Model)
@@ -376,16 +432,25 @@ function ClimberRig.Build(): Rig
 	applyPhysicalProperties(model)
 	applyCollisionGroups(model)
 
-	-- The torso is still held in place in phase 2, as it was in phase 1: the limbs
-	-- hang off a fixed body. Letting it fall needs the anchor and respawn system,
-	-- which is phase 5.
-	torso.Anchored = true
+	-- Phase 5 lets the body fall. Phases 1 and 2 held the torso in place so the limbs
+	-- had something fixed to hang off; now the whole rig hangs from whatever its limbs
+	-- are gripping, and drops when they are gripping nothing.
+	--
+	-- Written explicitly rather than by deleting the line that set it true, because
+	-- the authority on the rig's properties is the saved model and a template that
+	-- ever comes back anchored would leave the body hanging in the air with no error
+	-- to explain why. This is also what puts the torso in front of ClaimOwnership,
+	-- which skips anchored parts.
+	torso.Anchored = false
 
-	-- Puts the torso's centre exactly on SpawnPosition, which is what CameraController
-	-- and TargetReticle assume while the torso cannot move. Expressed as a translation
-	-- of the existing pivot rather than a pivot target, so it lands the torso whatever
+	-- Puts the torso's centre exactly on SpawnPosition. Expressed as a translation of
+	-- the existing pivot rather than a pivot target, so it lands the torso whatever
 	-- the model's pivot happens to be, and so the modelled rotations survive untouched.
 	model:PivotTo(model:GetPivot() + (Config.Rig.SpawnPosition - torso.Position))
+
+	-- After the placement and before anything simulates, which is the only window in
+	-- which the modelled pose can still be read off the live parts.
+	captureRestPose(model, torso)
 
 	buildJoints(model)
 
