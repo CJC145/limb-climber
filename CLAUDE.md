@@ -15,7 +15,7 @@ If anything below contradicts it, the design document wins.
 ## Current phase
 
     PHASE: 2
-    STATUS: not started
+    STATUS: in progress
 
 Update this block when a phase is accepted. Build only the current phase.
 
@@ -103,7 +103,7 @@ Do not invent a different structure.
 
 ## Things that will waste a day if forgotten
 
-- `CustomPhysicalProperties` must be set explicitly on all 11 rig parts.
+- `CustomPhysicalProperties` must be set explicitly on all 14 rig parts.
 - Every constraint needs an `Attachment` on **both** connected parts.
 - `SetNetworkOwner(nil)` must be re-applied after any rig respawn.
 - `AlignPosition.MaxForce` is the primary feel dial. Expect to tune it, keep it in Config.
@@ -114,7 +114,7 @@ Do not invent a different structure.
 
 Modelling and spatial work is done by the human in Studio, not by script generation:
 
-- **Phase 2** — the 11-part climber rig, proportions and attachment placement
+- **Phase 2** — the 14-part climber rig, proportions and attachment placement
 - **Phase 6** — tool models (piton, rope, ice screw, gloves, hook)
 - **Phase 7** — all level geometry, surface tagging, tool placement
 

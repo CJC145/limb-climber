@@ -59,7 +59,7 @@ This is not a small optimisation. A Humanoid runs a state machine that actively 
 
 ## The climber rig
 
-Eleven parts. Each limb is a three-segment chain, which is the minimum that bends convincingly.
+Fourteen parts: a torso, a head, and four three-segment limbs, which is the minimum that bends convincingly.
 
 | Part | Parent joint | Joint type | Angle limit | Notes |
 | --- | --- | --- | --- | --- |
@@ -317,7 +317,7 @@ AI is good at systems, logic and tuning loops. It is bad at 3D modelling, spatia
 | --- | --- | --- | --- |
 | 0 | Project skeleton | All modules stubbed, `Config` populated | Nothing |
 | 1 | **One arm, one player** | Rig spawn, AlignPosition targeting, grip on/off | Build a simple test wall with `Rock` tagged parts |
-| 2 | Full four-limb rig | Joint chain, limits, mass properties | **Model the climber rig** — 11 parts, correct proportions, attachment points placed |
+| 2 | Full four-limb rig | Joint chain, limits, mass properties | **Model the climber rig** — 14 parts, correct proportions, attachment points placed |
 | 3 | Multiplayer assignment | LimbAssignment, input routing, RemoteEvents | Nothing |
 | 4 | Camera system | Stabilised head-cam, focus blending | Judge the feel and report back — AI cannot evaluate this |
 | 5 | Stamina and falling | Drain rates, anchor respawn | Tune the numbers by playing |
@@ -332,7 +332,7 @@ A single arm reaching and gripping a wall, nothing else. It is roughly a day's w
 
 **Phase 2 — the climber rig.** This is the biggest handoff. AI can generate parts via script, but the proportions will be wrong and the attachment placement will be off. Build it yourself:
 
-- 11 parts per the rig table, anatomically sensible proportions
+- 14 parts per the rig table, anatomically sensible proportions
 - An `Attachment` at each joint location on **both** connecting parts
 - Parts named exactly as the rig table lists them — code will index by name
 - No Humanoid, no Motor6Ds, no default character rig as a starting point
@@ -404,7 +404,7 @@ Each of these causes a rewrite if discovered late. Most are cheap to get right o
 | Trap | What happens | Do this instead |
 | --- | --- | --- |
 | Mixing Motor6D and constraints on one joint | Fighting forces, jitter, impossible to debug | Pick constraints. Delete every Motor6D |
-| Default part densities | Body feels wrong; misdiagnosed as a constraint bug | Set `CustomPhysicalProperties` on all 11 parts |
+| Default part densities | Body feels wrong; misdiagnosed as a constraint bug | Set `CustomPhysicalProperties` on all 14 parts |
 | Gripping unanchored or moving parts | Network ownership conflicts, physics explosions | Forbid initially; design for it deliberately later |
 | Testing without latency | Everything works in Studio, breaks on release | Use Studio's network condition settings from phase 3 |
 | `AlignPosition.MaxForce` left at default | Robotic or limp; either way unplayable | Treat as the primary feel dial; tune in `Config` |
@@ -420,7 +420,7 @@ Use a `CollisionGroup` per limb to suppress within-limb collision while keeping 
 
 ### Performance
 
-Eleven constrained parts simulated server-side, times however many concurrent runs. This is fine for small servers but will not scale to 50 players. Cap server size low — around 8 to 12 — and treat it as a design constraint rather than a problem to solve.
+Fourteen constrained parts simulated server-side, times however many concurrent runs. This is fine for small servers but will not scale to 50 players. Cap server size low — around 8 to 12 — and treat it as a design constraint rather than a problem to solve.
 
 ## Connecting AI to Roblox Studio
 
