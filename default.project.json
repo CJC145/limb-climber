@@ -22,6 +22,9 @@
       "StarterPlayerScripts": {
         "Climber": {
           "$path": "src/client/Climber"
+        },
+        "Bootstrap": {
+          "$path": "src/client/Bootstrap.client.luau"
         }
       }
     },
