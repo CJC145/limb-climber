@@ -28,6 +28,29 @@ local InputRouter = {}
 local held: { [LimbId]: true } = {}
 local heldByKey: { [Enum.KeyCode]: LimbId } = {}
 
+-- The same set as `held`, kept in press order so the camera can frame the limb the
+-- player reached for most recently. A set cannot answer that -- Luau table order is
+-- not insertion order -- and a player holding two keys would otherwise get a focus
+-- limb that changes at random between frames.
+local heldOrder: { LimbId } = {}
+
+local function forgetHeld(limbId: LimbId)
+	local index = table.find(heldOrder, limbId)
+	if index then
+		table.remove(heldOrder, index)
+	end
+end
+
+-- Which limb the focus-cam should frame, or nil for head-cam.
+--
+-- CameraController asks rather than watching keys itself, so that key-to-limb
+-- resolution -- including the Space alias and the ownership check -- has one
+-- implementation. A spectator never passes that check, so they never get an entry
+-- here and always read nil.
+function InputRouter.GetFocusLimb(): LimbId?
+	return heldOrder[#heldOrder]
+end
+
 local function ownsLimb(limbId: LimbId): boolean
 	local attribute = Config.Net.LimbOwnershipAttributePrefix .. limbId
 	return Players.LocalPlayer:GetAttribute(attribute) == true
@@ -88,6 +111,7 @@ function InputRouter.Start()
 
 		held[limbId] = true
 		heldByKey[input.KeyCode] = limbId
+		table.insert(heldOrder, limbId)
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
@@ -99,6 +123,7 @@ function InputRouter.Start()
 		held[limbId] = nil
 		heldByKey[input.KeyCode] = nil
 		lastSentAt[limbId] = nil
+		forgetHeld(limbId)
 
 		-- Releasing the key is the grip attempt, so this one always goes out.
 		Net.LimbIntent:FireServer(limbId, TargetReticle.GetTargetPosition(), false)
