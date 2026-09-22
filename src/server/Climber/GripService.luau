@@ -165,6 +165,22 @@ function GripService.SetIntent(limbId: LimbId, targetPosition: Vector3, isHeld: 
 	end
 end
 
+-- Ends a reach that nobody is going to finish. A player who disconnects mid-hold
+-- leaves their limb in Reaching with the align enabled and pulling at a target no
+-- release will ever clear, so reassignment calls this on every orphan.
+--
+-- Deliberately not a grip attempt: a disconnect must not hand out a free hold.
+function GripService.AbandonReach(limbId: LimbId)
+	local runtime = runtimes[limbId]
+	if not runtime or runtime.state ~= "Reaching" then
+		return
+	end
+
+	-- No releaseGrip here -- entering Reaching already tore the old grip down.
+	runtime.limb.align.Enabled = false
+	setState(runtime, "Free")
+end
+
 function GripService.GetState(limbId: LimbId): GripState?
 	local runtime = runtimes[limbId]
 	return runtime and runtime.state or nil

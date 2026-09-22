@@ -1,7 +1,10 @@
 --!strict
 
--- Phase 1 entry point: build the rig, hand its limbs to the first player in, and
--- route validated intent into GripService.
+-- Server entry point: build the rig, run the session lifecycle, and route validated
+-- intent into GripService.
+--
+-- Phase 3 replaces phase 1's "first player in takes everything" with a real roster.
+-- The rules and the lock live in LimbAssignment; what is here is the wiring.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -94,14 +97,19 @@ Players.PlayerAdded:Connect(function(player)
 	-- streaming is off.
 	player.ReplicationFocus = rig.torso
 
-	for limbId in rig.limbs do
-		if LimbAssignment.GetOwner(limbId) == nil then
-			LimbAssignment.Assign(player, limbId)
-		end
-	end
+	-- Joins the waiting list, or is ignored if the session has already locked. A
+	-- spectator needs nothing else from here: they get a camera and a reticle like
+	-- everyone else, and no limb will ever answer their keys.
+	LimbAssignment.PlayerJoined(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	LimbAssignment.ClearPlayer(player)
 	lastIntentAt[player] = nil
+
+	-- Orphans are whatever the departing player held. They have new owners by the
+	-- time this returns, but a limb they quit mid-reach is still reaching, and the
+	-- intent stream that would have ended it left with them.
+	for _, limbId in LimbAssignment.PlayerLeft(player) do
+		GripService.AbandonReach(limbId)
+	end
 end)

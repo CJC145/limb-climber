@@ -4,6 +4,10 @@
 -- Values marked "guess" below have no number given in the design doc and are
 -- placeholders to be tuned once the relevant phase is playable.
 
+local Types = require(script.Parent.Types)
+
+type LimbId = Types.LimbId
+
 export type SurfaceEntry = {
 	BaseGrip: number,
 	FailAfterSeconds: number?,
@@ -137,15 +141,44 @@ Config.Grip = {
 -- E + C", described as left side / right side: Q and Z have to be the same side of
 -- the body, not the same row of the keyboard. Q is the right arm, so Q/Z are the
 -- right side and E/C the left. Phase 3 can then split a session without rebinding.
-local limbKeys: { [string]: Enum.KeyCode } = {
-	ArmR = Enum.KeyCode.Q,
-	LegR = Enum.KeyCode.Z,
-	ArmL = Enum.KeyCode.E,
-	LegL = Enum.KeyCode.C,
+-- Annotated through a named type rather than left to inference. Without it the
+-- string literals below are inferred as plain `string`, and every consumer that
+-- wants a LimbId out of LimbOrder has to cast to get one.
+export type InputConfig = {
+	LimbKeys: { [LimbId]: Enum.KeyCode },
+	LimbOrder: { LimbId },
+	SoloLimbKey: Enum.KeyCode,
 }
 
-Config.Input = {
-	LimbKeys = limbKeys,
+local input: InputConfig = {
+	LimbKeys = {
+		ArmR = Enum.KeyCode.Q,
+		LegR = Enum.KeyCode.Z,
+		ArmL = Enum.KeyCode.E,
+		LegL = Enum.KeyCode.C,
+	},
+
+	-- A stable order for the four limbs. Shared because two places have to walk them
+	-- identically every time: the HUD's ownership list, and the server's orphan
+	-- reassignment, which would otherwise hand out limbs in Luau's table order and
+	-- produce a different split on each disconnect.
+	LimbOrder = { "ArmR", "ArmL", "LegR", "LegL" },
+
+	-- The doc's four-player row gives Space as the per-player key. It is an alias
+	-- rather than a rebind: it resolves to whichever single limb the presser owns,
+	-- and does nothing at all for anyone holding two or more.
+	SoloLimbKey = Enum.KeyCode.Space,
+}
+
+Config.Input = input
+
+-- Session lifecycle.
+Config.Session = {
+	-- There is no lobby, so the run starts on a timer: this long after the first
+	-- player joins, everyone present is assigned limbs and the session locks.
+	-- Long enough for a second client to finish loading into a playtest, short
+	-- enough that a solo player is not left waiting on nobody.
+	LobbyGraceSeconds = 10,
 }
 
 -- Networking.
