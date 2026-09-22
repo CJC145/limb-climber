@@ -15,7 +15,7 @@ These are settled. The coding phase treats them as fixed inputs, not open questi
 | 1 | Mid-run joining | Not allowed. Limbs assigned at run start, session locked | Retrofitting mid-run assignment later means rewriting the ownership and camera handoff |
 | 2 | Tools | Consumable. Each use spends the item | Makes every tool a real decision and feeds the checkpoint economy |
 | 3 | Fall handling | No global reset. Last player-placed anchor is the fallback | Keeps tension; ties failure directly to the tool economy |
-| 4 | Limb self-collision | On, between limbs and torso. Off between the two parts of the same limb | Limbs passing through the body kills the physicality; same-limb collision causes joint jitter |
+| 4 | Limb self-collision | On, between limbs and torso — except the segment joined to it. Off between the parts of the same limb | Limbs passing through the body kills the physicality; same-limb collision causes joint jitter |
 | 5 | Coordination | HUD communicates limb intent visually. Voice is a bonus, never assumed | A game that only works with voice chat loses most of its players |
 | 6 | Physics model | Physics-driven, not snap-to-hold | Snapping turns this into a turn-based puzzle game and deletes the genre's appeal |
 | 7 | Authority | Server-owned physics body | The only model that treats all players equally — see next section |
@@ -67,14 +67,26 @@ Fourteen parts: a torso, a head, and four three-segment limbs, which is the mini
 | --- | --- | --- | --- | --- |
 | Torso | — | root part | — | Heaviest part; the assembly root |
 | Head | Torso | BallSocket | 45° | Camera anchor, not a hitbox |
-| UpperArm L/R | Torso | BallSocket | 90° | Shoulder |
+| UpperArm L/R | Torso | BallSocket | 150° | Shoulder — see below |
 | LowerArm L/R | UpperArm | HingeConstraint | 0–145° | Elbow — hinge, not ball socket |
 | Hand L/R | LowerArm | BallSocket | 60° | Grip point, carries the AlignPosition |
-| UpperLeg L/R | Torso | BallSocket | 75° | Hip |
+| UpperLeg L/R | Torso | BallSocket | 120° | Hip — see below |
 | LowerLeg L/R | UpperLeg | HingeConstraint | 0–140° | Knee — hinge |
 | Foot L/R | LowerLeg | BallSocket | 45° | Grip point |
 
 **Elbows and knees are hinges, not ball sockets.** A ball socket with tight limits will still let a knee bend sideways under load, which looks broken and is hard to diagnose later. Use `HingeConstraint` with `LimitsEnabled` and the real anatomical range.
+
+### Shoulder and hip limits, corrected after the phase 5 playtest
+
+**The original figures — 90° shoulder, 75° hip — were wrong, and wrong in a way worth recording because the mistake is easy to repeat.** A `BallSocketConstraint` limit is a cone half-angle measured from the joint's *rest* direction, which for every limb here is straight down. It is not a range either side of anything. So 0° is a limb hanging down, 90° is a limb horizontal, and 180° is a limb straight up.
+
+A 90° shoulder therefore let the arm reach exactly horizontal and stop dead. A cross-body reach was not merely hard, it was unreachable: the hand could get as far as the midline at its own shoulder's height and no further. The hip was worse in the same direction — 75° stopped the thigh short of horizontal, so a knee could not come up to chest height and a foot could not be placed on any hold above the waist.
+
+**This read as a force problem and was not one.** A joint pinned against its limit and a limb with no force behind it look identical from outside the screen, which cost a tuning pass on `MaxForceWeightFraction` before the real cause was found. When a limb will not go somewhere, check the cone before the force.
+
+These are anatomically generous rather than accurate, and deliberately. A real shoulder's range depends on which direction it is travelling in; a cone has one number for every direction, so it has to be cut for the widest one or it blocks that one. The hip is kept tighter than the shoulder for a non-anatomical reason: the legs carry the body's weight against the wall, and a hip that folds as freely as a shoulder lets the rig collapse into itself.
+
+**`TwistLimitsEnabled` stays off on every ball socket.** It is a second, independent restriction on the same constraint — rotation about the cone axis — and it defaults to off, which means it is invisible in the code unless written down. It is now written down. Roll about a limb's own long axis is not something this game constrains.
 
 ### Mass properties
 
@@ -335,12 +347,16 @@ Keep these small — they fire every frame a limb is active.
 
 | Event | Direction | Payload |
 | --- | --- | --- |
-| `LimbIntent` | Client to server | limbId, targetPosition (Vector3), isHeld (bool) |
+| `LimbIntent` | Client to server | limbId, targetPosition (Vector3), aimOrigin (Vector3), isHeld (bool) |
 | `LimbState` | Server to client | limbId, gripState, stamina |
 | `ToolUse` | Client to server | toolId, limbId |
 | `AnchorSet` | Server to client | anchorPosition |
 
 Rate-limit `LimbIntent` server-side. It is the obvious exploit vector and the obvious source of bandwidth problems.
+
+**`aimOrigin` was added to `LimbIntent` in phase 5** and is the one payload that grew. The server clamps every target into the reaching limb's own reach envelope, and doing that *along the aim ray* rather than radially is what keeps the clamped point on the line the player pointed down. Radial clamping — walking outward from the shoulder toward the target — brings an out-of-range point back at a sideways angle, so the hand lands somewhere the player did not aim and pointing at a distant hold stretches toward something beside it.
+
+Clamping along the ray needs the ray, and the ray starts at the camera's eye, which only the client knows. It grants a client nothing: every point the clamp can return is inside that limb's envelope either way, so a forged origin can only pick a target the limb could have reached honestly.
 
 **Limb ownership is not one of these events.** It replicates as a per-player attribute written only by `LimbAssignment`, which each client reads for itself. A RemoteEvent would be a second copy of the mapping, and the whole point of `LimbAssignment` is that there is no second copy.
 
@@ -449,9 +465,17 @@ Each of these causes a rewrite if discovered late. Most are cheap to get right o
 
 ### The self-collision detail
 
-Per decision 4: limbs collide with the torso, but the two segments of the same limb do not collide with each other. Roblox turns off collision between directly constrained parts automatically — but upper arm and hand are *not* directly constrained, so they will collide and cause elbow jitter.
+Per decision 4: limbs collide with the torso, but the segments of the same limb do not collide with each other. Roblox turns off collision between directly constrained parts automatically — but upper arm and hand are *not* directly constrained, so they will collide and cause elbow jitter.
 
 Use a `CollisionGroup` per limb to suppress within-limb collision while keeping limb-to-torso collision on. Set this up in phase 2, not later.
+
+**Refined after the phase 5 playtest: the top segment of each limb is excused from torso collision.** `UpperArm L/R` and `UpperLeg L/R` no longer collide with the torso. Everything below them — forearms, hands, shins, feet — still does.
+
+An upper arm and a shoulder occupy overlapping space by construction, because the joint between them sits inside both, and the same is true of a thigh and a hip. Leaving those pairs collidable meant the solver spent every frame pushing two parts out of an overlap the rig's own geometry created. The practical effect was a wall down the middle of the body: an arm swinging across the chest hit the torso at the shoulder and stopped. Combined with the 90° cone above, a cross-body reach was blocked twice over.
+
+The body stays solid everywhere a limb could actually be driven into it. A hand cannot pass through the chest; the part now allowed through is the one that was never free to move away from the torso in the first place.
+
+**This costs eight limb collision groups rather than four.** A part belongs to exactly one group and collidability is defined between pairs of groups, so "upper segments ignore the torso" cannot be expressed while an upper segment shares a group with its own forearm. One shared group for all four upper segments is fewer groups and wrong — it would have to be non-collidable with every lower group to suppress within-limb collision, which would also stop an upper arm colliding with the *other* arm's forearm and quietly delete limb-against-limb.
 
 ### Performance
 

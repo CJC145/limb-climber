@@ -32,6 +32,7 @@ local CameraController = require(script.Parent.CameraController)
 local TargetReticle = {}
 
 local targetPosition = Vector3.zero
+local aimOrigin = Vector3.zero
 
 local function createGui(): Frame
 	local screenGui = Instance.new("ScreenGui")
@@ -77,6 +78,16 @@ end
 -- what the server's clamp already does.
 function TargetReticle.GetTargetPosition(): Vector3
 	return targetPosition
+end
+
+-- Where this frame's aim ray was cast from: the camera's own position in first
+-- person, and the point the cursor ray leaves the viewport in third.
+--
+-- Sent alongside the target so the server can clamp along the ray rather than
+-- radially. The eye is the only part of the aim the server cannot work out for
+-- itself -- it knows where the body is, but not where the player is looking from.
+function TargetReticle.GetAimOrigin(): Vector3
+	return aimOrigin
 end
 
 function TargetReticle.Start()
@@ -140,6 +151,10 @@ function TargetReticle.Start()
 		local reach = Config.Grip.MaxTargetDistance
 		local hit = workspace:Raycast(eye, direction * reach, params)
 
+		-- Both published together, from the same cast. The pair has to describe one
+		-- ray: an origin from this frame and a target from the last would define a
+		-- line through neither.
+		aimOrigin = eye
 		targetPosition = if hit then hit.Position else eye + direction * reach
 	end)
 end

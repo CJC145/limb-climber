@@ -49,17 +49,54 @@ Config.Friction = {
 	Extremity = 0.9,
 }
 
--- Joint angle limits in degrees, straight from the design doc's rig table.
+-- Joint angle limits in degrees, from the design doc's rig table except where the
+-- playtest overruled it -- see the shoulder and hip below.
 --
 -- These are unsigned anatomical ranges. Which way a hinge bends is not a tunable --
 -- it falls out of which way the hinge axis faces -- so ClimberRig owns the direction
 -- and an elbow and a knee both read 0 to ~140 here despite bending opposite ways.
+--
+-- WHAT A BALL SOCKET LIMIT MEASURES, because the shoulder figure was wrong for
+-- exactly this reason. It is a cone half-angle measured from the joint's *rest*
+-- direction, which for every limb here is straight down:
+--
+--     0 deg    limb hanging straight down
+--     90 deg   limb horizontal -- out to the side, forward, or across the body
+--     180 deg  limb straight up
+--
+-- It is not a range either side of anything. A limit of 90 does not mean "90 degrees
+-- of freedom", it means the limb may reach horizontal and stop dead there.
 Config.JointLimits = {
 	Head = { Type = "BallSocket", Limit = 45 },
-	Shoulder = { Type = "BallSocket", Limit = 90 },
+
+	-- 150, not the doc's 90.
+	--
+	-- At 90 the arm could reach exactly horizontal and no further, which put the hand
+	-- level with its own shoulder on the body's midline and made a cross-body reach
+	-- impossible -- the playtest read this as the arm being weak, because a joint
+	-- pinned against its limit and a limb with no force behind it look identical from
+	-- outside. 150 puts the hand well past the midline and 60 degrees above
+	-- horizontal, which is where the interesting holds are.
+	--
+	-- Anatomically generous rather than accurate. A real shoulder's range depends on
+	-- which direction it is travelling in, and a cone has only one number; the cone
+	-- has to be cut for the widest direction or it blocks that one.
+	Shoulder = { Type = "BallSocket", Limit = 150 },
+
 	Elbow = { Type = "Hinge", Min = 0, Max = 145 },
 	Hand = { Type = "BallSocket", Limit = 60 },
-	Hip = { Type = "BallSocket", Limit = 75 },
+
+	-- 120, not the doc's 75, and wrong in the same way for the same reason. At 75 the
+	-- thigh stopped 15 degrees short of horizontal, so a knee could not come up to
+	-- chest height and a foot could not be placed on a hold above waist level -- which
+	-- is most of climbing.
+	--
+	-- Lower than the shoulder deliberately, not for anatomy but because the legs carry
+	-- the body's weight against the wall and a hip that folds as freely as a shoulder
+	-- lets the rig collapse into itself. This is a feel dial, and the first thing to
+	-- try if high foot placements are still blocked.
+	Hip = { Type = "BallSocket", Limit = 120 },
+
 	Knee = { Type = "Hinge", Min = 0, Max = 140 },
 	Foot = { Type = "BallSocket", Limit = 45 },
 }

@@ -48,8 +48,12 @@ local function isFinite(value: Vector3): boolean
 	return true
 end
 
-Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targetPosition: any, isHeld: any)
-	if typeof(limbId) ~= "string" or typeof(targetPosition) ~= "Vector3" or typeof(isHeld) ~= "boolean" then
+Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targetPosition: any, aimOrigin: any, isHeld: any)
+	if typeof(limbId) ~= "string" or typeof(isHeld) ~= "boolean" then
+		return
+	end
+
+	if typeof(targetPosition) ~= "Vector3" or typeof(aimOrigin) ~= "Vector3" then
 		return
 	end
 
@@ -62,7 +66,10 @@ Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targe
 		return
 	end
 
-	if not isFinite(targetPosition) then
+	-- Both, because both reach the maths. A non-finite origin would poison the ray
+	-- direction and put a nan into an AlignPosition, which fails somewhere that looks
+	-- nothing like here.
+	if not isFinite(targetPosition) or not isFinite(aimOrigin) then
 		return
 	end
 
@@ -88,7 +95,14 @@ Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targe
 	-- the server's bound on how far a target may be: whatever a client sends, the
 	-- point the align actually chases is inside one limb's own reach. There is no
 	-- second, looser check to keep in step with it.
-	GripService.SetIntent(limb, ClimberRig.ClampToReach(rig.limbs[limb], targetPosition), isHeld)
+	--
+	-- The origin steers the clamp without loosening it. It decides which way the
+	-- point moves to get inside the envelope, never how big the envelope is, so a
+	-- client that lies about where it is looking still cannot ask for a target its
+	-- limb could not have reached honestly.
+	local clamped = ClimberRig.ClampToReach(rig.limbs[limb], aimOrigin, targetPosition)
+
+	GripService.SetIntent(limb, clamped, isHeld)
 end)
 
 Players.PlayerAdded:Connect(function(player)

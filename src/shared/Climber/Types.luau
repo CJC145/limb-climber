@@ -11,9 +11,21 @@ export type LimbId = "ArmR" | "ArmL" | "LegR" | "LegL"
 export type GripState = "Free" | "Reaching" | "Gripped"
 
 -- Client -> server. Fires every frame a limb is active, so keep it small.
+--
+-- `aimOrigin` is a second Vector3 the design doc's payload table does not list, and
+-- it is not a convenience. The server clamps the target into the limb's reach, and
+-- doing that *along the aim ray* rather than radially is what keeps the clamped point
+-- on the line the player pointed down -- which needs the line, and the line is the
+-- camera's eye, which only the client knows. Sending the point without it leaves the
+-- server able to say how far but not which way.
+--
+-- It grants a client nothing. Every point the clamp can return is inside that limb's
+-- own envelope, so the worst a forged origin can do is pick a reachable target, which
+-- is what the honest field already does.
 export type LimbIntent = {
 	limbId: LimbId,
 	targetPosition: Vector3,
+	aimOrigin: Vector3,
 	isHeld: boolean,
 }
 

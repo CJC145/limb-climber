@@ -101,7 +101,7 @@ function InputRouter.Start()
 		lastSentAt[limbId] = nil
 
 		-- Releasing the key is the grip attempt, so this one always goes out.
-		Net.LimbIntent:FireServer(limbId, TargetReticle.GetTargetPosition(), false)
+		Net.LimbIntent:FireServer(limbId, TargetReticle.GetTargetPosition(), TargetReticle.GetAimOrigin(), false)
 	end)
 
 	RunService.RenderStepped:Connect(function()
@@ -111,7 +111,7 @@ function InputRouter.Start()
 			local last = lastSentAt[limbId]
 			if last == nil or now - last >= minInterval then
 				lastSentAt[limbId] = now
-				Net.LimbIntent:FireServer(limbId, TargetReticle.GetTargetPosition(), true)
+				Net.LimbIntent:FireServer(limbId, TargetReticle.GetTargetPosition(), TargetReticle.GetAimOrigin(), true)
 			end
 		end
 	end)

@@ -108,33 +108,69 @@ local PART_GRADE: { [string]: Grade } = {
 
 -- COLLISION -------------------------------------------------------------------
 --
--- Decision 4: the segments of one limb do not collide with each other, but limbs do
--- collide with the torso. One group per limb, made non-collidable with itself, buys
--- exactly that -- and it covers the directly-constrained pairs too, so it does not
--- matter whether the engine would have suppressed those on its own.
+-- Decision 4, as refined by the phase 5 playtest: the segments of one limb do not
+-- collide with each other, limbs collide with the torso -- except at the segment
+-- that attaches to it.
+--
+-- The exception is the refinement. An upper arm and a shoulder occupy overlapping
+-- space by construction, because the joint between them sits inside both; the same
+-- goes for a thigh and a hip. Leaving those pairs collidable meant the solver spent
+-- every frame pushing two parts out of an overlap the rig's own geometry created,
+-- and the practical effect was a wall down the middle of the body: an arm swinging
+-- across the chest hit the torso at the shoulder and stopped, which read as the
+-- shoulder being stuck. It was.
+--
+-- Only the top segment is excused. A forearm, a hand, a shin and a foot all still
+-- collide with the torso, so the body remains solid everywhere a limb could actually
+-- be driven into it, and a hand cannot pass through the chest. The part that is
+-- allowed through is the one that was never free to move away from the torso anyway.
+--
+-- WHY EIGHT LIMB GROUPS AND NOT FOUR. A part belongs to exactly one collision group,
+-- and collidability is defined between pairs of groups, so "upper segments ignore the
+-- torso" cannot be expressed while an upper segment shares a group with its own
+-- forearm. Splitting each limb in two is the smallest arrangement that says all four
+-- things at once:
+--
+--     Upper <-> Lower, same limb     off   segments of one limb do not collide
+--     Lower <-> itself               off   forearm against hand, shin against foot
+--     Upper <-> core                 off   the refinement above
+--     everything else                on    limb against limb, lower against core,
+--                                          and every group against the world
+--
+-- One shared group for all four upper segments would be fewer groups and wrong: it
+-- would have to be non-collidable with every lower group to suppress within-limb
+-- collision, which would also stop an upper arm colliding with the *other* arm's
+-- forearm and quietly delete limb-against-limb.
 --
 -- Head shares the torso's group. The doc calls it a camera anchor rather than a
 -- hitbox, and the neck's two attachments sit 0.15 studs apart, so leaving head-torso
 -- collision on would only fight the neck constraint.
---
--- Everything not listed here stays collidable: limb against core, limb against limb,
--- and every group against the world.
 
 local CORE_GROUP = "ClimberCore"
 
-local LIMB_GROUP: { [LimbId]: string } = {
-	ArmR = "ClimberArmR",
-	ArmL = "ClimberArmL",
-	LegR = "ClimberLegR",
-	LegL = "ClimberLegL",
+type LimbGroups = { Upper: string, Lower: string }
+
+local LIMB_GROUP: { [LimbId]: LimbGroups } = {
+	ArmR = { Upper = "ClimberArmRUpper", Lower = "ClimberArmRLower" },
+	ArmL = { Upper = "ClimberArmLUpper", Lower = "ClimberArmLLower" },
+	LegR = { Upper = "ClimberLegRUpper", Lower = "ClimberLegRLower" },
+	LegL = { Upper = "ClimberLegLUpper", Lower = "ClimberLegLLower" },
 }
 
 local GROUP_MEMBERS: { [string]: { string } } = {
 	[CORE_GROUP] = { "Torso", "Head" },
-	[LIMB_GROUP.ArmR] = { "UpperArmR", "LowerArmR", "HandR" },
-	[LIMB_GROUP.ArmL] = { "UpperArmL", "LowerArmL", "HandL" },
-	[LIMB_GROUP.LegR] = { "UpperLegR", "LowerLegR", "FootR" },
-	[LIMB_GROUP.LegL] = { "UpperLegL", "LowerLegL", "FootL" },
+
+	[LIMB_GROUP.ArmR.Upper] = { "UpperArmR" },
+	[LIMB_GROUP.ArmR.Lower] = { "LowerArmR", "HandR" },
+
+	[LIMB_GROUP.ArmL.Upper] = { "UpperArmL" },
+	[LIMB_GROUP.ArmL.Lower] = { "LowerArmL", "HandL" },
+
+	[LIMB_GROUP.LegR.Upper] = { "UpperLegR" },
+	[LIMB_GROUP.LegR.Lower] = { "LowerLegR", "FootR" },
+
+	[LIMB_GROUP.LegL.Upper] = { "UpperLegL" },
+	[LIMB_GROUP.LegL.Lower] = { "LowerLegL", "FootL" },
 }
 
 -- JOINTS ----------------------------------------------------------------------
@@ -359,11 +395,29 @@ local function applyCollisionGroups(model: Model)
 		if not PhysicsService:IsCollisionGroupRegistered(groupName) then
 			PhysicsService:RegisterCollisionGroup(groupName)
 		end
-		PhysicsService:CollisionGroupSetCollidable(groupName, groupName, false)
 
 		for _, partName in members do
 			findPart(model, partName).CollisionGroup = groupName
 		end
+	end
+
+	-- Self-collision off only where a group holds more than one part that would
+	-- otherwise fight. The upper groups hold one part each and need no such rule; the
+	-- core's two parts are the head and torso, which the neck constraint would spend
+	-- every frame arguing with.
+	PhysicsService:CollisionGroupSetCollidable(CORE_GROUP, CORE_GROUP, false)
+
+	for _, groups in LIMB_GROUP do
+		-- Forearm against hand, shin against foot.
+		PhysicsService:CollisionGroupSetCollidable(groups.Lower, groups.Lower, false)
+
+		-- The rest of "segments of one limb do not collide": this covers upper against
+		-- lower and upper against extremity in one rule, because the extremity shares
+		-- the lower group.
+		PhysicsService:CollisionGroupSetCollidable(groups.Upper, groups.Lower, false)
+
+		-- The refinement. Everything below this segment still hits the torso.
+		PhysicsService:CollisionGroupSetCollidable(groups.Upper, CORE_GROUP, false)
 	end
 end
 
@@ -385,6 +439,20 @@ local function buildJoints(model: Model)
 		constraint.Attachment1 = attachment1
 		constraint.LimitsEnabled = true
 		constraint.UpperAngle = spec.Limit
+
+		-- Written out rather than left at the engine default, which is what it already
+		-- was. A BallSocketConstraint carries two independent restrictions: the cone,
+		-- which UpperAngle sizes, and a twist range about the cone axis. The playtest
+		-- that found the shoulder cone too tight had to rule this one out first, and
+		-- "it defaults to false" is a worse answer to that question than a line of code
+		-- saying so -- especially for a value nobody would think to look for.
+		--
+		-- False on purpose, not merely by inheritance. Roll about a limb's own long
+		-- axis is not something this game constrains: the hand's own ball socket
+		-- decides where the grip point ends up, and a forearm that has rotated on the
+		-- way there costs nothing and is one less joint fighting the player.
+		constraint.TwistLimitsEnabled = false
+
 		constraint.Parent = proximal
 	end
 
@@ -474,28 +542,83 @@ function ClimberRig.SetReachForceScale(scale: number)
 	applyMaxForce()
 end
 
--- Clamps a target to what this limb can physically get to.
+-- Clamps a target to what this limb can physically get to, without moving it off the
+-- line the player is pointing along.
 --
--- This is the other half of the flying fix, and the half that does the real work.
--- The old clamp was 14 studs from the torso's centre, which is several times an
--- arm's length, so a target above the head was permanently unreachable and the align
--- chased it at full force for as long as the key was held -- a sustained upward pull
--- on the body with nothing to pull against. Inside the envelope the hand arrives,
--- the error goes to zero, and the force goes with it. The limb stops straining
--- because it has nothing left to strain toward.
+-- The envelope is the other half of the flying fix and does the real work there. The
+-- old clamp was 14 studs from the torso's centre, several times an arm's length, so a
+-- target above the head was permanently unreachable and the align chased it at full
+-- force for as long as the key was held -- a sustained upward pull on the body with
+-- nothing to pull against. Inside the envelope the hand arrives, the error goes to
+-- zero, and the force goes with it.
 --
--- Measured from the limb's own root rather than the torso, so the direction that
--- survives the clamp is the direction the shoulder or hip actually has to send it.
-function ClimberRig.ClampToReach(limb: Limb, target: Vector3): Vector3
-	local origin = limb.root.WorldPosition
-	local offset = target - origin
-	local distance = offset.Magnitude
+-- HOW THE POINT IS BROUGHT INSIDE, which is what the playtest was about. The first
+-- version projected the target radially onto the sphere: it took the direction from
+-- the root to the target and walked out along it. That is the shortest way in, and it
+-- is the wrong way in, because the root is not where the player is looking from. A
+-- target off to one side comes back at a sideways angle, so the hand lands somewhere
+-- the player did not point and aiming feels like it is being argued with.
+--
+-- Clamping along the aim ray instead keeps the one thing the player actually chose.
+-- The point slides back down the ray toward the eye until it is inside the sphere, so
+-- it stays on the line through the crosshair and only its distance changes. Pointing
+-- at a hold out of reach now stretches the hand toward that hold rather than toward
+-- something next to it.
+--
+-- The sphere is still centred on the limb's own root and still measured from the rig,
+-- and the server still decides. Only the direction of the correction changed.
+function ClimberRig.ClampToReach(limb: Limb, aimOrigin: Vector3, target: Vector3): Vector3
+	local centre = limb.root.WorldPosition
+	local reach = limb.reach
 
-	if distance <= limb.reach or distance == 0 then
+	if (target - centre).Magnitude <= reach then
 		return target
 	end
 
-	return origin + offset.Unit * limb.reach
+	local along = target - aimOrigin
+	local rayLength = along.Magnitude
+	if rayLength == 0 then
+		-- No ray to clamp along, so there is no direction to preserve. Falls back to
+		-- the radial projection, which is the best available answer to "somewhere in
+		-- the rough direction of that".
+		local offset = target - centre
+		return if offset.Magnitude == 0 then target else centre + offset.Unit * reach
+	end
+
+	local direction = along / rayLength
+
+	-- Where the ray passes closest to the root, and how much room the sphere has left
+	-- at that point. Negative room means the ray misses the sphere entirely.
+	local closest = direction:Dot(centre - aimOrigin)
+	local gap = centre - (aimOrigin + direction * closest)
+	local room = reach * reach - gap:Dot(gap)
+
+	-- The span of the ray that lies inside the sphere, trimmed to the part in front of
+	-- the origin. Aiming does not reach behind the player's own eye.
+	local half = if room > 0 then math.sqrt(room) else 0
+	local nearest = math.max(closest - half, 0)
+	local furthest = closest + half
+
+	-- Two ways to have nothing to aim at: the ray misses the envelope, or it only
+	-- meets it behind the origin. The second is not reachable through the game's own
+	-- cameras -- first person sits inside the sphere and third person orbits facing
+	-- the body -- but aimOrigin arrives over the wire, and an inverted span would
+	-- otherwise hand math.clamp a minimum above its maximum and throw inside a remote
+	-- handler.
+	if room < 0 or furthest < nearest then
+		-- The player is pointing along a line no part of this limb's envelope touches.
+		-- The aim cannot be honoured exactly, so the answer is the nearest reachable
+		-- point to that line: the sphere's surface directly out from the ray's closest
+		-- approach, which keeps the hand as near the aim as the geometry allows.
+		local from = aimOrigin + direction * math.max(closest, 0) - centre
+		return if from.Magnitude == 0 then centre + Vector3.yAxis * reach else centre + from.Unit * reach
+	end
+
+	-- Clamping the target's own distance into that span slides it along the ray by the
+	-- least amount that gets it inside -- backwards in the ordinary case of aiming
+	-- past a hold, and forwards in the third-person case of aiming at something nearer
+	-- the camera than the body is.
+	return aimOrigin + direction * math.clamp(rayLength, nearest, furthest)
 end
 
 -- Mirrors a Config value onto an attribute of the rig model and applies it on change.
