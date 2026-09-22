@@ -65,22 +65,25 @@ Config.JointLimits = {
 }
 
 -- AlignPosition, the primary feel dial. The design doc calls MaxForce out as the
--- main thing to tune but gives no starting number -- every value here is a guess.
+-- main thing to tune but gives no starting number. These started as guesses and have
+-- had one playtest pass over them, so they are now measured against somebody's hands
+-- rather than against nothing -- which is not the same as settled.
 --
 -- MaxForce is a fraction of the rig's own weight rather than a raw number, and
 -- ClimberRig multiplies it by the weight it measures off the 14 parts at build.
 --
 -- That is a bug fix, not tidiness. At a raw 10000 the aligns could out-pull gravity
 -- on the whole climber, so once phase 5 unanchored the torso a limb reaching at the
--- sky flew the entire body. Expressed as a fraction below 1.0 the value is
--- arithmetically incapable of it: a limb cannot lift a body that weighs more than
--- the force the limb is permitted to apply.
+-- sky flew the entire body. Expressing the dial as a share of the body's own weight
+-- is what makes the failure describable at all: the question "can a limb lift the
+-- climber" stops being an empirical one about a number nobody can read and becomes
+-- arithmetic anyone can check. The bound that matters is below.
 --
 -- THE GUARANTEE, and what breaks it. Four limbs can reach at once, so the number
 -- that actually has to stay under 1.0 is the *total*:
 --
---     nothing gripped   4 x MaxForceWeightFraction x FreefallForceScale  =  0.8
---     something gripped 3 x MaxForceWeightFraction                       =  2.4
+--     nothing gripped   4 x MaxForceWeightFraction x FreefallForceScale  =  0.84
+--     something gripped 3 x MaxForceWeightFraction                       =  4.2
 --
 -- Only the first line is a guarantee, and it is the one that matters -- a body with
 -- nothing holding on must not be able to fly. The second is deliberately allowed to
@@ -88,33 +91,69 @@ Config.JointLimits = {
 -- three limbs hauling against that hold is the gripped arm pulling the body up. That
 -- is climbing. Capping it would delete the mechanic.
 --
--- So if you raise either dial, keep their product under 0.25.
+-- So if you raise either dial, keep their product under 0.25. It currently sits at
+-- 1.4 x 0.15 = 0.21, which leaves room to take the fraction to about 1.66 before the
+-- budget is spent and FreefallForceScale has to come down to pay for more.
 --
 -- NOTE: a running server caches this module, so editing the file mid-playtest does
 -- not change anything. ClimberRig mirrors these onto attributes of the rig model so
 -- they can be dragged live in the Properties panel; write the value you settle on
 -- back into this file.
 Config.AlignPosition = {
-	-- Fraction of the rig's total weight one limb may pull with. Below 1.0 by
-	-- definition -- see above.
-	MaxForceWeightFraction = 0.8,
+	-- Fraction of the rig's total weight one limb may pull with.
+	--
+	-- Raised from 0.8 after the first playtest, where limbs read as weak and slow.
+	-- Above 1.0 now, which is fine and is not the guarantee being bent: a single limb
+	-- can out-pull the body's weight only in the case where something else is gripped
+	-- and the body is hanging off it, which is climbing. The airborne case is the one
+	-- that is bounded, and it is bounded below.
+	MaxForceWeightFraction = 1.4,
 
 	-- What that fraction is multiplied by while no limb is gripped. "Heavily reduced"
 	-- rather than zero: the climber has to be able to reach for its first hold from a
 	-- standing start, so this cannot become a gate without deadlocking the spawn.
 	--
-	-- What it buys is that a reach made in mid-air is weak and flaily -- you can
-	-- grab at a passing ledge, but you cannot swim.
-	FreefallForceScale = 0.25,
+	-- What it buys is that a reach made in mid-air is weak and flaily -- you can grab
+	-- at a passing ledge, but you cannot swim.
+	--
+	-- Lowered from 0.25 to pay for the fraction above, which is why it looks like a
+	-- weakening and is not one. In absolute terms an airborne reach went from
+	-- 0.8 x 0.25 = 0.2 of body weight to 1.4 x 0.15 = 0.21, so mid-air flailing is
+	-- very slightly stronger than it was. All that moved is the gap between airborne
+	-- and gripped, which widened -- which is the point.
+	FreefallForceScale = 0.15,
 
-	Responsiveness = 25,
+	-- How hard the align converges once it has a force budget to spend. Raised from
+	-- 25 in the same pass and for the same complaint: force decides whether a limb
+	-- can move, this decides how decisively it commits to the move. Past here it
+	-- starts to read as a limb slamming into position and ringing.
+	Responsiveness = 45,
+
+	-- Untouched, and deliberately. At 40 studs/s a limb crosses its whole reach
+	-- envelope in under a tenth of a second, so this cap is nowhere near binding and
+	-- raising it would change nothing about how slow a limb feels.
 	MaxVelocity = 40,
 }
 
 -- Stamina drain per second for a gripped limb, keyed by how many limbs are gripped
 -- in total. The design doc only gives qualitative rates ("very fast"/"fast"/
--- "slow"/"regenerating"); every number here is a guess and the whole table expects
--- to be tuned by playing.
+-- "slow"/"regenerating"), so the shape is the doc's and the magnitudes are not.
+--
+-- Halved across the board after the first playtest, where stamina ran out faster
+-- than a hold could be planned. Every entry scaled by the same factor, so this is a
+-- change of timescale and not of shape: one limb is still the emergency, two is
+-- still the climbing state, three is still the rest, four still recovers.
+--
+--     1 limb    10s of hanging before the arm gives out
+--     2 limbs   20s
+--     3 limbs   50s
+--     4 limbs   ~33s to refill from empty
+--
+-- WATCH THIS. RegenRate below was not halved, because it is not in this table and
+-- the complaint was about draining rather than recovering. That means the one ratio
+-- this pass did *not* preserve is resting-recovery against drain, which is now twice
+-- as generous as it was. If the next playtest says stamina has stopped mattering,
+-- that ratio is the first place to look and not these four numbers.
 --
 -- Note the sign on the four-limb row. The doc's fourth row is "regenerating", not
 -- "no drain", so it is a negative drain rather than a zero -- which keeps one code
@@ -126,10 +165,10 @@ Config.AlignPosition = {
 Config.Stamina = {
 	Max = 100,
 	DrainPerLimbsGripped = {
-		[1] = 20,
-		[2] = 10,
-		[3] = 4,
-		[4] = -6,
+		[1] = 10,
+		[2] = 5,
+		[3] = 2,
+		[4] = -3,
 	},
 	RegenRate = 8,
 
