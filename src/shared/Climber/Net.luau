@@ -38,6 +38,14 @@ local Net = {
 	-- gripped and not aiming at anything.
 	LimbPull = remote("LimbPull"),
 
+	-- Client -> server: Types.RollIntent fields, passed positionally.
+	--
+	-- Not a Limb event, and the only input in the game that is not. There is one
+	-- torso and every assigned player shares it, so the server takes each player's
+	-- request and rolls the net of them -- which means two players pulling opposite
+	-- ways cancel rather than one of them winning.
+	RollIntent = remote("RollIntent"),
+
 	-- Server -> client: Types.LimbState fields, passed positionally.
 	LimbState = remote("LimbState"),
 }

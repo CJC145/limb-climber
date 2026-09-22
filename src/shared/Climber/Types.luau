@@ -40,6 +40,15 @@ export type LimbPull = {
 	isPulling: boolean,
 }
 
+-- Client -> server. Which way this player wants the torso rolled: +1 left, -1 right,
+-- 0 not at all. Edge-triggered like LimbPull.
+--
+-- Deliberately not a magnitude. A client sending 4.7 would be asking for a torque
+-- nobody agreed to, so the server takes the sign and supplies the strength itself.
+export type RollIntent = {
+	direction: number,
+}
+
 -- Server -> client. Absolute stamina rather than a fraction: Config.Stamina.Max is
 -- shared, so a client that wants a 0..1 bar can divide, and a client that wants the
 -- number has it. Sending a fraction would throw away which of the two the reader

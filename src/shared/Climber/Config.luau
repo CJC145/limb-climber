@@ -254,8 +254,13 @@ Config.Joints = {
 	-- and can still be moved.
 	--
 	-- Wants to sit near the gravity torque on the limb hanging off it: below that
-	-- and the joint sags anyway, far above it and the arm is a statue. Guess.
-	BallSocketFriction = 250,
+	-- and the joint sags anyway, far above it and the arm is a statue.
+	--
+	-- Down from 250 after the playtest called it slightly stiff. Deliberately a
+	-- third off rather than a halving: the value before this one was a free-swinging
+	-- zero, and the useful range is somewhere between the two rather than near
+	-- either end.
+	BallSocketFriction = 160,
 
 	-- ServoMaxTorque on the idle elbows and knees. Same intent as the friction above
 	-- and the same scale, but it is doing more work -- see RestBend.
@@ -264,7 +269,12 @@ Config.Joints = {
 	-- a reach would be fighting the limb's own tone to straighten it. With MaxForce at
 	-- 1.4 body weights over a forearm's leverage there are thousands of torque
 	-- available against this, so there is a lot of room before that becomes a problem.
-	HingeTone = 250,
+	--
+	-- Down from 250 alongside the friction above, by the same third and for the same
+	-- complaint. Kept equal to it, not because the two mechanisms are interchangeable
+	-- -- they are not -- but because nothing yet suggests an elbow wants a different
+	-- amount of tone from a shoulder. Split them the moment something does.
+	HingeTone = 160,
 
 	-- How fast a relaxed elbow or knee settles toward its rest bend, in radians per
 	-- second. This is a limb relaxing, not a limb acting, so it is deliberately
@@ -317,6 +327,38 @@ Config.Pull = {
 	-- deliberate rather than snappy, because a body this heavy arriving instantly
 	-- reads as a glitch rather than as strength. Guess.
 	AngularVelocity = 3,
+}
+
+-- Rolling: torque on the torso about its own forward axis, for righting a sprawled
+-- body and for turning over on a ledge. Nothing in the design doc; the climber had
+-- no way to reorient itself at all.
+--
+-- SAFE FOR A DIFFERENT REASON THAN THE PULL. A pull is safe because a joint motor is
+-- internal to the body. This is not internal -- it acts on the torso against the
+-- world -- but a Torque constraint applies a pure couple, which has no resultant
+-- force, so it can only ever spin the body and never move it anywhere. There is no
+-- amount of this that lifts a climber.
+--
+-- What it can do badly is spin. Torque is acceleration, not speed, so a held key in
+-- open air keeps adding to the rate rather than settling at one, which is what the
+-- scale below is for.
+Config.Roll = {
+	-- Guess, and the one to expect to move. It has to beat the torque gravity exerts
+	-- on a body lying awkwardly across a ledge, so it is larger than the pull's --
+	-- that turns one joint against one limb, this turns the whole climber. Too low
+	-- and a sprawled body cannot right itself, which is the entire feature; too high
+	-- and a tap flips the climber onto its face.
+	Torque = 15000,
+
+	-- Multiplied in while the body is airborne: nothing gripped and nothing
+	-- underneath. Deliberately the same shape of dial as FreefallForceScale, and
+	-- driven by the same freefall test AnchorService already runs, so there is one
+	-- notion of "in the air" in this project rather than two that can disagree.
+	--
+	-- Heavy reduction because unlimited mid-air rolling is a different game. A little
+	-- is right -- a falling climber shifting their weight is real -- but a body that
+	-- can spin freely in the air stops reading as a body. Guess.
+	FreefallScale = 0.15,
 }
 
 -- Falling. Nothing here comes from the design doc, which says only that a fall past
@@ -492,6 +534,7 @@ export type InputConfig = {
 	LimbOrder: { LimbId },
 	SoloLimbKey: Enum.KeyCode,
 	PullModifiers: { Enum.KeyCode },
+	RollKeys: { Left: Enum.KeyCode, Right: Enum.KeyCode },
 }
 
 local input: InputConfig = {
@@ -522,6 +565,19 @@ local input: InputConfig = {
 	--
 	-- Both shifts, so it does not matter which hand is free.
 	PullModifiers = { Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift },
+
+	-- Roll the torso left and right. A and D because they already mean left and right
+	-- to everyone who has played anything, and because they sit in the middle of the
+	-- block the limb keys bracket -- Q and E above, Z and C below -- so they are
+	-- under the same hand without being under the same finger.
+	--
+	-- Free despite looking taken. WASD is Roblox's default movement, but
+	-- CharacterAutoLoads is off and there is no character to move; the camera is
+	-- Scriptable and reads the mouse only. Nothing else in this game binds them.
+	--
+	-- Checked against everything already bound: Q/E/Z/C are the limbs, Shift is the
+	-- pull modifier, F toggles third person, Space is the solo-limb reach alias.
+	RollKeys = { Left = Enum.KeyCode.A, Right = Enum.KeyCode.D },
 }
 
 Config.Input = input
@@ -563,6 +619,11 @@ Config.Net = {
 	-- Like LimbIntent, only the "pulling" edge is throttled. Dropping a "stopped"
 	-- would leave a motor running with nothing able to switch it off.
 	LimbPullMaxPerSecond = 20,
+
+	-- RollIntent, same shape and same reasoning as the pull cap: edges rather than a
+	-- stream, and only the edges that *start* a roll are throttled. A dropped "stop"
+	-- would leave the torso under torque with nothing able to cancel it.
+	RollIntentMaxPerSecond = 20,
 
 	-- Per-player attribute prefix LimbAssignment publishes ownership through, so a
 	-- client knows which keys are its own. Written only by LimbAssignment.

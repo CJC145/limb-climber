@@ -33,6 +33,11 @@ local anchorPosition = Config.Rig.SpawnPosition
 -- grip, by slowing down, and by a respawn.
 local freefallSeconds = 0
 
+-- The roll torque scale last pushed to ClimberRig, so the write happens on the frame
+-- the body leaves or reaches the ground rather than on every frame. Mirrors how
+-- GripService holds the reach force scale.
+local appliedRollScale = 1
+
 local stepConnection: RBXScriptConnection? = nil
 
 -- Moves the fallback point. Phase 6 calls this when a piton is driven or a rope is
@@ -84,14 +89,32 @@ local function step(deltaTime: number)
 		return
 	end
 
-	if GripService.GrippedCount() > 0 then
+	local torso = current.torso
+	local gripped = GripService.GrippedCount() > 0
+	local falling = torso.AssemblyLinearVelocity.Y < -Config.Fall.FreefallSpeed
+
+	-- Nothing holding on and nothing underneath. The same two facts the fall timer
+	-- below is built from, read once and used twice rather than tested separately --
+	-- a body that counts as falling for the respawn and not for the roll, or the
+	-- reverse, would be a bug nobody could describe.
+	--
+	-- "Nothing underneath" is inferred from the descent rather than from contact.
+	-- A body sprawled on a ledge with no grip is not moving, so it is not falling, so
+	-- it rolls at full strength -- which is the case this mechanic exists for.
+	local airborne = not gripped and falling
+	local scale = if airborne then Config.Roll.FreefallScale else 1
+
+	if scale ~= appliedRollScale then
+		appliedRollScale = scale
+		ClimberRig.SetRollTorqueScale(scale)
+	end
+
+	if gripped then
 		freefallSeconds = 0
 		return
 	end
 
-	local torso = current.torso
-
-	if torso.AssemblyLinearVelocity.Y < -Config.Fall.FreefallSpeed then
+	if falling then
 		freefallSeconds += deltaTime
 	else
 		freefallSeconds = 0
@@ -111,6 +134,10 @@ function AnchorService.Bind(boundRig: ClimberRig.Rig)
 	rig = boundRig
 	anchorPosition = Config.Rig.SpawnPosition
 	freefallSeconds = 0
+
+	-- Matches the scale ClimberRig.Build leaves behind, so the first airborne frame
+	-- registers as a change.
+	appliedRollScale = 1
 
 	if stepConnection then
 		stepConnection:Disconnect()

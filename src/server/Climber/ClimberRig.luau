@@ -634,6 +634,55 @@ local function measureReach(model: Model, spec: ReachSpec): number
 	return length * Config.Grip.ReachFraction
 end
 
+-- ROLL ------------------------------------------------------------------------
+--
+-- Torque on the torso about its own forward axis, and the same two-input shape as
+-- the reach force above: a direction the players are asking for, a scale for whether
+-- the body is airborne, and one function that multiplies them.
+--
+-- WHICH WAY IS LEFT. The model faces -Z, so with +Y up the climber's right hand is
+-- at +X. A right-handed rotation about +Z carries +X toward +Y -- the right side
+-- rises and the body tips leftward -- so a positive direction is a roll to the left.
+--
+-- Derived from the facing convention rather than observed, and a sign error here
+-- produces a perfectly working mechanic with its controls swapped. If A tips the
+-- body the wrong way, negate this and nothing else.
+local ROLL_AXIS = Vector3.zAxis
+
+local rollTorque: Torque? = nil
+local rollDirection = 0
+local rollScale = 1
+
+local function applyRoll()
+	local constraint = rollTorque
+	if not constraint then
+		return
+	end
+
+	constraint.Torque = ROLL_AXIS * (rollDirection * Config.Roll.Torque * rollScale)
+
+	-- Disabled rather than left at zero torque. A constraint doing arithmetic on
+	-- nothing every frame is a constraint that can still be seen in the explorer
+	-- doing something, and the explorer is where this will be debugged.
+	constraint.Enabled = rollDirection ~= 0
+end
+
+-- The net of what every player is asking for: -1, 0 or +1. Bootstrap sums the
+-- roster and clamps, so two players rolling opposite ways cancel and two rolling the
+-- same way are not twice as strong as one.
+function ClimberRig.SetRoll(direction: number)
+	rollDirection = direction
+	applyRoll()
+end
+
+-- Scaled down while the body is airborne. AnchorService calls this, because the test
+-- for "in the air" is the freefall test it already runs for fall detection, and a
+-- second copy of that test would be a second thing to keep in step.
+function ClimberRig.SetRollTorqueScale(scale: number)
+	rollScale = scale
+	applyRoll()
+end
+
 -- How hard a reach pulls, as a multiple of the configured fraction. GripService
 -- calls this when the number of gripped limbs crosses zero in either direction.
 --
@@ -844,6 +893,33 @@ function ClimberRig.Build(): Rig
 	-- against it: every force below is a multiple of this number.
 	rigWeight = measureWeight(model)
 	forceScale = 1
+
+	-- The roll torque, and the one attachment in this project the model does not
+	-- supply. It is not a joint location and it is not a placement decision: a Torque
+	-- constraint applies a pure couple, which acts on the whole assembly regardless of
+	-- where its attachment sits, so only the frame's *orientation* matters and the
+	-- position is arbitrary. The torso's own origin is the least surprising arbitrary
+	-- point available.
+	local rollAttachment = Instance.new("Attachment")
+	rollAttachment.Name = "RollPoint"
+	rollAttachment.CFrame = CFrame.identity
+	rollAttachment.Parent = torso
+
+	local torque = Instance.new("Torque")
+	torque.Name = "Roll"
+	torque.Attachment0 = rollAttachment
+
+	-- Relative to the attachment, so the axis tumbles with the body. In world terms
+	-- the climber's forward axis is wherever the climber is currently pointing, and a
+	-- sprawled body being righted is exactly the case where those differ most.
+	torque.RelativeTo = Enum.ActuatorRelativeTo.Attachment0
+	torque.Enabled = false
+	torque.Parent = torso
+
+	rollTorque = torque
+	rollDirection = 0
+	rollScale = 1
+	applyRoll()
 
 	local limbs: { [LimbId]: Limb } = {}
 	aligns = {}

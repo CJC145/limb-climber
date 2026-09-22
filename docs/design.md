@@ -205,6 +205,16 @@ Each player drives only the limbs they own. In a four-player run nobody can asce
 
 A pull costs stamina at a multiple of the ordinary drain for its row, so hauling is work and hanging is not. The four-limb row regenerates, and a pull there cancels the recovery rather than doubling it: you can haul from the safest position, and it stops being a rest while you do.
 
+### Rolling: righting the body
+
+**Also added after the phase 5 playtest.** A climber that has fallen and landed badly is sprawled, and had no way to do anything about it — the limbs could reach but nothing could turn the body over. `A` and `D` apply torque to the torso about its own forward axis.
+
+**This one is safe for a different reason than the pull.** A pull is internal, so it cannot move the body without a grip. Roll is *not* internal — it acts on the torso against the world — but a `Torque` constraint applies a pure couple, which has no resultant force. It can only ever spin the body, never move it. No amount of it lifts a climber.
+
+What it can do badly is spin. Torque is acceleration, not speed, so a key held in open air keeps adding to the rate. **The torque is therefore scaled down heavily while the body is airborne** — nothing gripped and nothing underneath — using the same freefall test that decides whether a fall has happened, so there is one notion of "in the air" in this project rather than two that can drift apart. A sprawled body is not falling, so it rolls at full strength, which is the case the mechanic exists for.
+
+**Roll is the one input that is not attached to a limb**, because there is one torso and it is nobody's. Every assigned player may ask for it and the body does the net: two players rolling the same way get one roll rather than a double-strength one, and two rolling opposite ways cancel. That is the honest outcome of a shared body and a disagreement about where it should point. Spectators have no say.
+
 ## Surfaces and tools
 
 ### Surfaces via CollectionService tags
@@ -324,6 +334,10 @@ Two properties make this readable rather than arbitrary: player 1 holds `ArmR` i
 
 Which gesture a press is gets decided when the key goes down and does not change while it is held. Letting go of `Shift` mid-pull does nothing; the limb key ends it. Re-resolving on the fly would turn a pull into a reach with no keypress, and a reach begins by dropping the hold that was being hauled on. `Space` carries the modifier like any other limb key, so a solo player's alias works in both modes rather than only one.
 
+**`A` and `D` roll the torso** left and right — see the roll mechanic above. They sit in the middle of the block the limb keys bracket, `Q`/`E` above and `Z`/`C` below, so they are under the same hand without being under the same finger. `WASD` looks taken and is not: `CharacterAutoLoads` is off, so there is no character to move and nothing else in the game binds them. Holding both roll keys nets to zero rather than being an error.
+
+The full binding table is therefore `Q`/`E`/`Z`/`C` for limbs, `Shift` as the pull modifier, `A`/`D` for roll, `F` for the third-person toggle, and `Space` as the solo-limb alias.
+
 **Run start.** With no lobby there has to be a defined moment when the session locks. The run starts `Config.Session.LobbyGraceSeconds` after the first player joins: everyone present at that instant is assigned, and the session locks per decision 1. Anyone arriving later is a spectator — camera and reticle, no limbs. If more than four players are present, the first four by join order are assigned and the rest spectate.
 
 ### Run lifecycle
@@ -400,6 +414,7 @@ Keep these small — they fire every frame a limb is active.
 | --- | --- | --- |
 | `LimbIntent` | Client to server | limbId, targetPosition (Vector3), aimOrigin (Vector3), isHeld (bool) |
 | `LimbPull` | Client to server | limbId, isPulling (bool) |
+| `RollIntent` | Client to server | direction (−1, 0 or +1) |
 | `LimbState` | Server to client | limbId, gripState, stamina |
 | `ToolUse` | Client to server | toolId, limbId |
 | `AnchorSet` | Server to client | anchorPosition |

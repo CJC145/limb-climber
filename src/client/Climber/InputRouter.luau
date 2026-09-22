@@ -14,6 +14,10 @@
 -- different chord rather than a second press of the same key, because holding a limb
 -- key is what *releases* that limb's grip -- and a pull has nothing to haul on
 -- without one. The two gestures are opposites wearing the same key.
+--
+-- A and D roll the torso, and are the one input here that is not a limb's. There is
+-- one body and every assigned player shares it, so these go to the server as a vote
+-- rather than as a command -- the torso does the net of what it is asked.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -49,9 +53,33 @@ local heldByKey: { [Enum.KeyCode]: LimbId } = {}
 local pulling: { [LimbId]: true } = {}
 local pullByKey: { [Enum.KeyCode]: LimbId } = {}
 
+-- Roll is not a limb and so is tracked by key rather than by limb: one torso, and
+-- both roll keys can be down at once. Holding both is not an error and not ignored --
+-- it nets to zero, which is what pressing left and right together should do.
+local rollKeysDown: { [Enum.KeyCode]: number } = {}
+local rollSent = 0
+
 local function ownsLimb(limbId: LimbId): boolean
 	local attribute = Config.Net.LimbOwnershipAttributePrefix .. limbId
 	return Players.LocalPlayer:GetAttribute(attribute) == true
+end
+
+-- Sends the net of the roll keys currently down, and only when it changes. The state
+-- is held, not streamed: the server keeps applying the torque until told otherwise,
+-- so there is nothing to repeat every frame.
+local function updateRoll()
+	local net = 0
+	for _, value in rollKeysDown do
+		net += value
+	end
+
+	local direction = math.clamp(net, -1, 1)
+	if direction == rollSent then
+		return
+	end
+
+	rollSent = direction
+	Net.RollIntent:FireServer(direction)
 end
 
 -- Polled at the moment of the press rather than tracked through its own key events.
@@ -103,8 +131,24 @@ function InputRouter.Start()
 	local minInterval = 1 / Config.Net.LimbIntentMaxPerSecond
 	local lastSentAt: { [LimbId]: number } = {}
 
+	-- Which way each roll key turns the body. Positive is a roll to the left, matching
+	-- the sign ClimberRig resolves against the rig's facing.
+	local rollByKey: { [Enum.KeyCode]: number } = {
+		[Config.Input.RollKeys.Left] = 1,
+		[Config.Input.RollKeys.Right] = -1,
+	}
+
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if processed then
+			return
+		end
+
+		-- Before the limb lookup, because a roll key is not a limb key and would fall
+		-- straight out of the bottom of it.
+		local roll = rollByKey[input.KeyCode]
+		if roll then
+			rollKeysDown[input.KeyCode] = roll
+			updateRoll()
 			return
 		end
 
@@ -142,7 +186,16 @@ function InputRouter.Start()
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
-		-- Pulls first, and with no gameProcessedEvent filter for the same reason the
+		-- Unfiltered like everything else in here: whatever started has to be able to
+		-- finish. A roll left running because its key-up was swallowed is a torso
+		-- turning with nobody driving it.
+		if rollKeysDown[input.KeyCode] then
+			rollKeysDown[input.KeyCode] = nil
+			updateRoll()
+			return
+		end
+
+		-- Pulls next, and with no gameProcessedEvent filter for the same reason the
 		-- reach below has none: whatever started has to be able to finish. A pull left
 		-- running because its key-up was swallowed is a motor nobody can switch off.
 		local pullLimb = pullByKey[input.KeyCode]

@@ -131,6 +131,22 @@ function LimbAssignment.OwnsLimb(player: Player, limbId: LimbId): boolean
 	return ownerByLimb[limbId] == player
 end
 
+-- Whether this player holds any limb at all, which is the same question as "is this
+-- player in the run" -- a spectator holds none by definition.
+--
+-- Asked by the roll input, which is the one control not attached to a limb and so
+-- the one that cannot gate itself with OwnsLimb. Answered here rather than by a
+-- caller walking LimbOrder, because the whole point of this module is that the
+-- mapping is read in one place.
+function LimbAssignment.HasAnyLimb(player: Player): boolean
+	for _, owner in ownerByLimb do
+		if owner == player then
+			return true
+		end
+	end
+	return false
+end
+
 function LimbAssignment.IsLocked(): boolean
 	return locked
 end
