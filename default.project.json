@@ -18,6 +18,15 @@
       }
     },
 
+    "ServerStorage": {
+      "Assets": {
+        "$className": "Folder",
+        "ClimberRig": {
+          "$path": "assets/climber.rbxm"
+        }
+      }
+    },
+
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "Climber": {

@@ -9,11 +9,6 @@ export type SurfaceEntry = {
 	FailAfterSeconds: number?,
 }
 
-export type PartSpec = {
-	Size: Vector3,
-	Offset: Vector3,
-}
-
 local Config = {}
 
 -- Relative density for CustomPhysicalProperties, torso = 1.0 baseline.
@@ -36,13 +31,25 @@ Config.Mass = {
 
 -- Friction. Design doc gives ranges (extremities 0.8-1.0, torso/upper limbs 0.2-0.3);
 -- these starting values are a guess within those ranges, not measured.
+--
+-- The doc's friction table has no head or lower-limb row. Both values below are
+-- therefore guesses on top of guesses: the head borrows the torso value because it
+-- is a camera anchor rather than a climbing surface, and the lower limb borrows the
+-- upper-limb value. Worth a look if a forearm or shin sticks to a wall in a way the
+-- hand or foot does not.
 Config.Friction = {
 	Torso = 0.25,
+	Head = 0.25,
 	UpperLimb = 0.25,
+	LowerLimb = 0.25,
 	Extremity = 0.9,
 }
 
--- Joint angle limits in degrees.
+-- Joint angle limits in degrees, straight from the design doc's rig table.
+--
+-- These are unsigned anatomical ranges. Which way a hinge bends is not a tunable --
+-- it falls out of which way the hinge axis faces -- so ClimberRig owns the direction
+-- and an elbow and a knee both read 0 to ~140 here despite bending opposite ways.
 Config.JointLimits = {
 	Head = { Type = "BallSocket", Limit = 45 },
 	Shoulder = { Type = "BallSocket", Limit = 90 },
@@ -124,18 +131,31 @@ Config.Grip = {
 	MaxTargetDistance = 14,
 }
 
--- Input. Phase 1 is one player, one key, per the phase 1 gate.
--- The doc's solo-player binding is Q / E / Z / C; Q is the right arm.
+-- Input. The doc's solo-player binding is Q / E / Z / C.
+--
+-- Which key goes to which limb is fixed by the doc's two-player split, "Q + Z, then
+-- E + C", described as left side / right side: Q and Z have to be the same side of
+-- the body, not the same row of the keyboard. Q is the right arm, so Q/Z are the
+-- right side and E/C the left. Phase 3 can then split a session without rebinding.
+local limbKeys: { [string]: Enum.KeyCode } = {
+	ArmR = Enum.KeyCode.Q,
+	LegR = Enum.KeyCode.Z,
+	ArmL = Enum.KeyCode.E,
+	LegL = Enum.KeyCode.C,
+}
+
 Config.Input = {
-	LimbKeys = {
-		ArmR = Enum.KeyCode.Q,
-	},
+	LimbKeys = limbKeys,
 }
 
 -- Networking.
 Config.Net = {
 	-- LimbIntent fires every frame a limb is held, so the cap has to sit above the
 	-- display rate. Above this the server drops the extra calls.
+	--
+	-- Counted per limb, not per player: one player can hold all four limbs at once,
+	-- and a shared budget would have them starve each other. A player's ceiling is
+	-- therefore this times the number of limbs they own.
 	LimbIntentMaxPerSecond = 90,
 
 	-- Per-player attribute prefix LimbAssignment publishes ownership through, so a
@@ -143,28 +163,17 @@ Config.Net = {
 	LimbOwnershipAttributePrefix = "OwnsLimb_",
 }
 
--- Phase 1 rig geometry. This rig is script-built scaffolding and is replaced by the
--- modelled 11-part rig in phase 2 -- proportions here are readable, not anatomical.
--- Offsets are relative to the rig spawn point, which is the torso's centre.
-local rigParts: { [string]: PartSpec } = {
-	Torso = { Size = Vector3.new(2, 3, 1), Offset = Vector3.new(0, 0, 0) },
-	UpperArmR = { Size = Vector3.new(0.8, 1.6, 0.8), Offset = Vector3.new(1, 0.4, 0) },
-	LowerArmR = { Size = Vector3.new(0.7, 1.5, 0.7), Offset = Vector3.new(1, -1.15, 0) },
-	HandR = { Size = Vector3.new(0.6, 0.6, 0.6), Offset = Vector3.new(1, -2.2, 0) },
-}
-
+-- Rig geometry is no longer described here. Phase 1's script-built scaffolding has
+-- been replaced by the modelled rig in assets/climber.rbxm, which is the authority
+-- on part sizes, part positions and attachment positions. Nothing in code writes
+-- them, so there is nothing here to tune.
 Config.Rig = {
 	ModelName = "Climber",
 	SpawnPosition = Vector3.new(0, 20, 0),
-	Parts = rigParts,
 
-	-- Joint positions, same frame of reference as the part offsets above. Each sits
-	-- exactly on the boundary between the two parts it connects.
-	Joints = {
-		ShoulderR = Vector3.new(1, 1.2, 0),
-		ElbowR = Vector3.new(1, -0.4, 0),
-		WristR = Vector3.new(1, -1.9, 0),
-	},
+	-- Name of the rig template under ServerStorage/Assets, as default.project.json
+	-- mounts it. ClimberRig clones this; the clone is renamed to ModelName.
+	TemplateName = "ClimberRig",
 }
 
 return Config

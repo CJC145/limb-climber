@@ -1,9 +1,9 @@
 --!strict
 
--- Shared type definitions. Phase 1 only defines what phase 1 uses; limb ids for
--- limbs that do not exist yet are deliberately absent.
+-- Shared type definitions. Phase 2 has the full four-limb rig, so all four limb
+-- ids exist; nothing beyond them does.
 
-export type LimbId = "ArmR"
+export type LimbId = "ArmR" | "ArmL" | "LegR" | "LegL"
 
 export type GripState = "Free" | "Reaching" | "Gripped"
 

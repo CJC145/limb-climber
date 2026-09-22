@@ -22,7 +22,10 @@ GripService.Bind(rig)
 
 local MIN_INTENT_INTERVAL = 1 / Config.Net.LimbIntentMaxPerSecond
 
-local lastIntentAt: { [Player]: number } = {}
+-- Per player *and per limb*. A solo player holds up to four limbs at once and each
+-- one streams independently, so a single per-player budget would let whichever limb
+-- fired first in the window starve the rest.
+local lastIntentAt: { [Player]: { [Types.LimbId]: number } } = {}
 
 local function isFinite(value: Vector3): boolean
 	for _, component in { value.X, value.Y, value.Z } do
@@ -70,11 +73,15 @@ Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targe
 	-- dropping one would strand the limb mid-reach with no way back.
 	if isHeld then
 		local now = os.clock()
-		local last = lastIntentAt[player]
+
+		local perLimb = lastIntentAt[player] or {}
+		lastIntentAt[player] = perLimb
+
+		local last = perLimb[limb]
 		if last and now - last < MIN_INTENT_INTERVAL then
 			return
 		end
-		lastIntentAt[player] = now
+		perLimb[limb] = now
 	end
 
 	GripService.SetIntent(limb, clampToReach(targetPosition), isHeld)
