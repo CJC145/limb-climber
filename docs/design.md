@@ -39,7 +39,9 @@ For a slow, deliberate climbing game the lag is acceptable and arguably helps th
 
 ### The latency trick
 
-The limb lags, but the **aiming reticle does not**. Each client draws and moves its own reticle locally and instantly; only the limb's pursuit of it goes through the server. Players read responsiveness from the cursor, so the controls feel tight even though the body is behind.
+The limb lags, but the **aim does not**. Each client resolves its own aim point locally and instantly; only the limb's pursuit of it goes through the server. Players read responsiveness from the aim, so the controls feel tight even though the body is behind.
+
+Since the phase 4 revision this is the camera: the cursor is locked to the centre of the screen, the aim ray is the camera's look direction, and turning is local and immediate. Responsiveness is read off the whole moving view rather than off a cursor sliding across a still one, which is a stronger version of the same trick. See the camera section.
 
 ```mermaid
 flowchart LR
@@ -186,34 +188,40 @@ World anchors are also the checkpoint system — see the next section. Every anc
 
 ## Camera system
 
-The hybrid approach is right, but two details in the earlier sketch would have made the game unplayable.
+**Revised 2026-09-22, after the phase 4 playtest.** The original design gave the player no control of the view: the camera took its orientation from the climber's head, heavily damped, and a focus camera existed to compensate by swinging to frame whichever limb was being moved. Played, it was unusable — not hard in the intended way, just blind. Mouse-look replaces it and the focus camera is gone. The sections below are the revision; the reasoning that survived it is kept because it is still load-bearing.
 
 ### Head-cam must be stabilised
 
 A camera rigidly parented to a ragdoll head is a motion-sickness generator. Instead:
 
 - Follow the head's **position** with light damping
-- Damp **rotation** heavily — do not copy head orientation directly
+- Take **rotation from the mouse**, not from the head. The head's orientation is read nowhere
 - **Hard-lock the up vector to world-up.** The view never rolls, ever
 
-The body flails; the horizon does not. This single rule is the difference between an immersive game and one people quit after two minutes.
+The body flails; the horizon does not. That rule is the difference between an immersive game and one people quit after two minutes, and it is unchanged.
 
-### "Limb cam" is not mounted on the limb
+What changed is the second bullet. Damping the head's orientation was the original answer to the same problem, and it does keep the horizon steady — but it also means the player cannot choose where to look, which no amount of tuning fixes. Mouse-look solves the motion problem the same way (the view only moves when the player moves it) while handing back control. The camera is not damped toward the mouse: rotation is 1:1 and immediate, because a view that lagged the hand moving it reads as broken rather than as heavy.
 
-A camera attached to a swinging arm is unusable. What you actually want is a **focus camera**: it smoothly orbits to frame that limb and its reachable area from over the shoulder.
+### Mouse-look and aiming
 
-It reads to the player as *"my view shifted to my limb,"* delivers the spatial information they need to place it, and does not make anyone sick. Blend in over roughly 0.3s, hold while the key is held, blend back over 0.5s.
+The cursor is locked to the centre of the screen in both first and third person. The aim ray is the **camera's own look direction**, so the reticle sits nailed to the centre of the viewport and the player aims by turning.
+
+This keeps the latency trick intact and arguably sharpens it. Turning is local and instant; only the limb's pursuit of the target goes through the server. Responsiveness is now read off the whole moving view rather than off a cursor sliding across a still one.
+
+### There is no focus camera
+
+Removed. It existed because the player could not look where they wanted, and with mouse-look they can — the player simply looks at the limb.
 
 ```mermaid
 stateDiagram-v2
   [*] --> HeadCam
-  HeadCam --> FocusCam: limb key held
-  FocusCam --> HeadCam: limb key released
   HeadCam --> ThirdPerson: toggle
   ThirdPerson --> HeadCam: toggle
 ```
 
-The blend also acts as a **signal to other players** that someone is about to move — free non-verbal communication, which supports decision 5.
+**This costs something real, and it has to be paid back elsewhere.** The focus blend was named as a free non-verbal signal to other players that someone was about to move, supporting decision 5. That claim was already weak — each client runs its own camera, so the blend was only ever visible to the player performing it — but removing it means decision 5 now rests entirely on the HUD's limb-intent indicator, which does not exist yet.
+
+Decision 5 is locked, so that indicator is no longer optional polish: it is the only thing carrying the decision. `LimbState` already broadcasts `Reaching` to every client, so the data is there and only a reader is missing. **It must ship in phase 5.**
 
 ### Third-person toggle is mandatory
 
@@ -297,7 +305,7 @@ Hand this layout to whoever writes the code so they do not invent their own. Dir
 | --- | --- |
 | `InputRouter` | Keys to limb intents, for this player's limbs only |
 | `TargetReticle` | Local, instant, predicted aim point |
-| `CameraController` | Stabilised head-cam, focus-cam blending, third-person toggle |
+| `CameraController` | Stabilised mouse-look head-cam, third-person toggle |
 | `HUD` | Stamina bars, shared inventory, limb ownership indicators |
 
 **ReplicatedStorage/Climber/**
@@ -335,7 +343,7 @@ AI is good at systems, logic and tuning loops. It is bad at 3D modelling, spatia
 | 1 | **One arm, one player** | Rig spawn, AlignPosition targeting, grip on/off | Build a simple test wall with `Rock` tagged parts |
 | 2 | Full four-limb rig | Joint chain, limits, mass properties | **Model the climber rig** — 14 parts, correct proportions, attachment points placed |
 | 3 | Multiplayer assignment | LimbAssignment, input routing, RemoteEvents | Nothing |
-| 4 | Camera system | Stabilised head-cam, focus blending | Judge the feel and report back — AI cannot evaluate this |
+| 4 | Camera system | Stabilised mouse-look head-cam, third-person toggle | Judge the feel and report back — AI cannot evaluate this |
 | 5 | Stamina and falling | Drain rates, anchor respawn | Tune the numbers by playing |
 | 6 | Tools and surfaces | CanGrip modifiers, anchor spawning | **Model each tool** — piton, rope, ice screw, gloves, hook |
 | 7 | Level design | Nothing | **The entire mountain** — geometry, tagging, tool placement, difficulty curve |
