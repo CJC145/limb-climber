@@ -229,13 +229,9 @@ local HINGES: { HingeSpec } = {
 	},
 }
 
--- Which extremity carries each limb's AlignPosition and grip point.
-local LIMB_EXTREMITY: { [LimbId]: string } = {
-	ArmR = "HandR",
-	ArmL = "HandL",
-	LegR = "FootR",
-	LegL = "FootL",
-}
+-- Which extremity carries each limb's AlignPosition and grip point lives in Config,
+-- not here: phase 4's focus-cam needs the same mapping on the client, which cannot
+-- reach into ServerScriptService. See the note above Config.Rig.
 
 --------------------------------------------------------------------------------
 
@@ -390,7 +386,7 @@ function ClimberRig.Build(): Rig
 	local limbs: { [LimbId]: Limb } = {}
 	local aligns: { AlignPosition } = {}
 
-	for limbId, extremityName in LIMB_EXTREMITY do
+	for limbId, extremityName in Config.Rig.Extremity do
 		local extremity = findPart(model, extremityName)
 
 		-- The model's Grip attachment is the extremity's centre. It is both what

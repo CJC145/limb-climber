@@ -91,15 +91,67 @@ Config.Stamina = {
 	RegenRate = 8,
 }
 
--- Camera blend timings, in seconds.
+-- Camera. Only the two blend timings come from the design doc; every other number
+-- here is a guess and expects to be tuned by playing. They will be tuned twice --
+-- the torso is still anchored until phase 5, so the head barely moves and nothing
+-- below can be judged properly until the body can fall.
 Config.Camera = {
+	-- From the design doc: blend in over roughly 0.3s, back out over 0.5s.
 	FocusBlendIn = 0.3,
 	FocusBlendOut = 0.5,
 
-	-- Phase 1 only: a fixed camera that frames the rig, giving the mouse something
-	-- to cast a ray through. Replaced wholesale by the head-cam in phase 4.
-	-- Offset is from the rig spawn point, in world space. Guess.
-	Phase1Offset = Vector3.new(10, 2, 14),
+	-- The third-person toggle is not a blend time the doc gives, but cutting
+	-- between two cameras this far apart is jarring enough to be a bug. Guess.
+	ThirdPersonBlend = 0.35,
+
+	-- Exponential follow rates, per second. Higher is tighter, so higher means
+	-- *less* damping -- the doc's "light damping" on position is the large number
+	-- and its "heavily damped" rotation is the small one. The gap between these two
+	-- is the whole head-cam: the body flails, the horizon does not.
+	PositionFollowRate = 14,
+	RotationFollowRate = 2.5,
+
+	-- Where the eye sits relative to the head part. Clearance is measured from the
+	-- head's front face rather than its centre, so it stays outside the head
+	-- whatever proportions the modelled rig turns out to have.
+	EyeClearance = 0.4,
+	EyeHeight = 0.2,
+
+	-- Keeps the view out of the straight-up/straight-down singularity, where yaw
+	-- stops being meaningful and a damped camera can spin. The neck's 45 degree
+	-- limit means the head alone never gets near this; the focus vantage can.
+	MaxPitch = 80,
+
+	-- Focus-cam framing. The vantage sits back from, above, and to the limb's own
+	-- side of the point being framed -- behind the limb looking past it at where it
+	-- is going, rather than across the body at it.
+	FocusDistance = 7,
+	FocusShoulderOffset = 3.5,
+	FocusHeight = 2,
+
+	-- What the focus-cam centres on, along the line from torso to extremity.
+	-- 0 frames the body, 1 frames the hand or foot alone. Off 1 on purpose: the
+	-- doc asks for the limb *and its reachable area*, and a camera centred on the
+	-- extremity alone tracks a swinging part, which is the thing being avoided.
+	FocusBias = 0.7,
+
+	-- Third-person rest pose, measured back from the eye along the stabilised look
+	-- direction.
+	ThirdPersonDistance = 14,
+	ThirdPersonHeight = 3,
+
+	-- A setting, not a mode: this latches until pressed again. Free of the limb
+	-- keys (Q/E/Z/C) and of Space.
+	ToggleKey = Enum.KeyCode.F,
+
+	-- Where the camera sits for the few frames before the rig replicates to the
+	-- client. Offset from the rig spawn point, in world space.
+	--
+	-- This is the last use of SpawnPosition in this module and it is a bootstrap
+	-- only -- the head-cam itself reads the live Head part and never reads Config
+	-- for position again. Without it the camera sits at the origin until the rig
+	-- arrives.
+	BootstrapOffset = Vector3.new(10, 2, 14),
 }
 
 -- Tool use counts / durations.
@@ -200,13 +252,52 @@ Config.Net = {
 -- been replaced by the modelled rig in assets/climber.rbxm, which is the authority
 -- on part sizes, part positions and attachment positions. Nothing in code writes
 -- them, so there is nothing here to tune.
-Config.Rig = {
+--
+-- Extremity and Side are structure rather than tuning, and would sit in ClimberRig
+-- with the rest of the rig topology if the server were the only reader. Phase 4's
+-- focus-cam is a second reader on the client, which cannot require anything under
+-- ServerScriptService, and a mapping this small is exactly the kind that gets
+-- copied and then drifts. One copy, here, read by both.
+--
+-- Annotated through a named type for the same reason InputConfig above is: without
+-- it the keys infer as plain `string` and every consumer indexing by LimbId has to
+-- cast.
+export type RigConfig = {
+	ModelName: string,
+	SpawnPosition: Vector3,
+	TemplateName: string,
+	Extremity: { [LimbId]: string },
+	Side: { [LimbId]: string },
+}
+
+local rig: RigConfig = {
 	ModelName = "Climber",
 	SpawnPosition = Vector3.new(0, 20, 0),
 
 	-- Name of the rig template under ServerStorage/Assets, as default.project.json
 	-- mounts it. ClimberRig clones this; the clone is renamed to ModelName.
 	TemplateName = "ClimberRig",
+
+	-- Which part carries each limb's grip point and AlignPosition. The server
+	-- builds against these; the camera frames them.
+	Extremity = {
+		ArmR = "HandR",
+		ArmL = "HandL",
+		LegR = "FootR",
+		LegL = "FootL",
+	},
+
+	-- Which side of the body each limb is on, so the focus-cam knows which way to
+	-- step to get behind it. Spelled out rather than read off the limb id's last
+	-- letter, because that trick breaks silently the day a limb is renamed.
+	Side = {
+		ArmR = "Right",
+		ArmL = "Left",
+		LegR = "Right",
+		LegL = "Left",
+	},
 }
+
+Config.Rig = rig
 
 return Config
