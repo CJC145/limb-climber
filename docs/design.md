@@ -41,7 +41,7 @@ For a slow, deliberate climbing game the lag is acceptable and arguably helps th
 
 The limb lags, but the **aim does not**. Each client resolves its own aim point locally and instantly; only the limb's pursuit of it goes through the server. Players read responsiveness from the aim, so the controls feel tight even though the body is behind.
 
-Since the phase 4 revision this is the camera: the cursor is locked to the centre of the screen, the aim ray is the camera's look direction, and turning is local and immediate. Responsiveness is read off the whole moving view rather than off a cursor sliding across a still one, which is a stronger version of the same trick. See the camera section.
+Since the phase 4 revision the aim comes off the camera, and how depends on the view mode: down the centre of a locked view in first person, through a free cursor in third. Both resolve locally and immediately. See the camera section.
 
 ```mermaid
 flowchart LR
@@ -195,7 +195,7 @@ World anchors are also the checkpoint system — see the next section. Every anc
 A camera rigidly parented to a ragdoll head is a motion-sickness generator. Instead:
 
 - Follow the head's **position** with light damping
-- Take **rotation from the mouse**, not from the head. The head's orientation is read nowhere
+- Take **rotation from the mouse**, not from the head. The head's orientation is read nowhere. Which mouse movements count is the view mode's business, not this rule's — see below
 - **Hard-lock the up vector to world-up.** The view never rolls, ever
 
 The body flails; the horizon does not. That rule is the difference between an immersive game and one people quit after two minutes, and it is unchanged.
@@ -204,9 +204,18 @@ What changed is the second bullet. Damping the head's orientation was the origin
 
 ### Mouse-look and aiming
 
-The cursor is locked to the centre of the screen in both first and third person. The aim ray is the **camera's own look direction**, so the reticle sits nailed to the centre of the viewport and the player aims by turning.
+The two view modes take their input differently, and therefore aim differently. This is deliberate: each mode uses the cursor convention players already expect from it.
 
-This keeps the latency trick intact and arguably sharpens it. Turning is local and instant; only the limb's pursuit of the target goes through the server. Responsiveness is now read off the whole moving view rather than off a cursor sliding across a still one.
+| | Cursor | Turning the view | Aim ray | Reticle |
+| --- | --- | --- | --- | --- |
+| **First person** | Locked to centre, hidden | Any mouse movement | Camera's look direction | Dot fixed at centre |
+| **Third person** | Free and visible | Left button held and dragged | Through the cursor | The cursor itself; dot hidden |
+
+First person is the intended experience and is the stricter of the two: the player aims by turning, and the reticle never moves within the viewport. Third person is Roblox's own camera, because a player who has reached for the third-person toggle has reached for the familiar thing and should get it — free cursor, click-drag to look, point at what you want. During a drag the cursor is pinned where it was pressed, as Roblox's camera does, so it cannot run off the edge mid-rotation.
+
+Third person aiming through the cursor is not a concession, it is the better fit: pulled back from the body, the player can see several holds at once and point at one without swinging the whole view to face it.
+
+The latency trick holds in both. Each resolves locally and instantly; only the limb's pursuit of the target goes through the server. What carries the sense of responsiveness differs — the whole moving view in first person, the cursor in third — but neither waits on the network.
 
 ### There is no focus camera
 

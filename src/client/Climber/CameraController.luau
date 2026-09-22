@@ -19,10 +19,19 @@
 -- What did not survive: the head's *orientation* is now read nowhere. The camera
 -- reads Head.Position and Head.Size and nothing else about it.
 --
--- Aiming is the camera's own look direction. TargetReticle casts down the centre of
--- the screen, so the reticle no longer moves within the viewport -- the player aims
--- by turning. The design doc's latency trick still holds and arguably reads better:
--- turning is local and instant, while the limb's pursuit of the target lags.
+-- The two view modes take their input differently, and they aim differently as a
+-- result. That split is deliberate, not an inconsistency:
+--
+--   First person  cursor locked to centre, all mouse movement turns the view, and
+--                 the aim ray is the camera's own look direction. The reticle never
+--                 moves within the viewport -- the player aims by turning.
+--
+--   Third person  Roblox's own camera. Free cursor, and the view turns only while
+--                 the left button is held. Aiming is through the cursor, so the
+--                 player points at a hold without reorienting the whole view.
+--
+-- The design doc's latency trick holds either way: both resolve locally and
+-- instantly, and only the limb's pursuit of the target goes through the server.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -100,6 +109,13 @@ local pendingDelta = Vector2.zero
 local thirdPersonAlpha = 0
 local thirdPersonEnabled = false
 
+-- Left button held. Only third person consults it: first person turns on every
+-- mouse movement, held or not.
+--
+-- Tracked off the latch rather than the blend, so the cursor is freed the instant
+-- the toggle is pressed rather than a third of a second later.
+local rotating = false
+
 -- The camera this module has already put into Scriptable mode. Re-read every frame
 -- rather than captured once: if the engine ever swaps CurrentCamera out from under
 -- us, a captured reference means writing CFrames to a camera nobody is looking
@@ -126,9 +142,34 @@ local function rotation(): CFrame
 	return CFrame.fromEulerAnglesYXZ(pitch, yaw, NO_ROLL)
 end
 
+-- Mirrors Roblox's default camera. The cursor is free until a drag starts and is
+-- then pinned where it was pressed, so it cannot run off the edge of the screen
+-- mid-rotation and reappear somewhere else on release.
+local function updateMouseBehaviour()
+	if not thirdPersonEnabled then
+		UserInputService.MouseIconEnabled = false
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		return
+	end
+
+	UserInputService.MouseIconEnabled = true
+	UserInputService.MouseBehavior = if rotating
+		then Enum.MouseBehavior.LockCurrentPosition
+		else Enum.MouseBehavior.Default
+end
+
 local function applyMouseDelta()
 	local delta = pendingDelta
 	pendingDelta = Vector2.zero
+
+	-- Read and cleared above before this returns, so movement made while the view
+	-- is not being turned is discarded rather than banked. Third person accumulates
+	-- cursor travel the same way first person accumulates aim, and paying it out on
+	-- the next click would snap the view by every pixel the cursor had crossed since
+	-- the last drag.
+	if thirdPersonEnabled and not rotating then
+		return
+	end
 
 	-- Rightward mouse movement is positive X and has to turn the view right, which
 	-- is *decreasing* yaw: a positive rotation about +Y swings the look vector from
@@ -187,6 +228,16 @@ end
 
 --------------------------------------------------------------------------------
 
+-- Which view mode is live, and so which aiming model applies. TargetReticle asks
+-- because the two aim differently: first person down the centre of a locked view,
+-- third person through a free cursor.
+--
+-- Reports the latch rather than the blend, so aiming switches with the keypress
+-- instead of drifting over during the third of a second the camera takes to move.
+function CameraController.IsThirdPerson(): boolean
+	return thirdPersonEnabled
+end
+
 function CameraController.Start()
 	-- A vantage for the frames before the rig replicates, and the last thing in this
 	-- module that reads SpawnPosition. Once the head is in hand the camera follows
@@ -199,12 +250,9 @@ function CameraController.Start()
 	-- camera for no reason.
 	task.spawn(resolveRig)
 
-	-- The reticle is the cursor now.
-	UserInputService.MouseIconEnabled = false
-
-	-- Deliberately not filtered on gameProcessedEvent. The cursor is locked to the
-	-- centre and nothing else in this game consumes mouse movement, so the only
-	-- thing that flag could do here is drop aim input.
+	-- Deliberately not filtered on gameProcessedEvent. Nothing else in this game
+	-- consumes mouse movement, so the only thing that flag could do here is drop aim
+	-- input. Whether the movement is *used* is decided in applyMouseDelta.
 	UserInputService.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseMovement then
 			pendingDelta += Vector2.new(input.Delta.X, input.Delta.Y)
@@ -212,11 +260,32 @@ function CameraController.Start()
 	end)
 
 	UserInputService.InputBegan:Connect(function(input, processed)
-		if processed or input.KeyCode ~= Config.Camera.ToggleKey then
+		if processed then
 			return
 		end
-		-- A setting, not a hold: this latches until pressed again.
-		thirdPersonEnabled = not thirdPersonEnabled
+
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			-- Dropped, not kept. Movement can land between the last frame and this
+			-- press, and applying it on the first frame of the drag would kick the
+			-- view by however far the cursor travelled on its way to the click.
+			pendingDelta = Vector2.zero
+			rotating = true
+			return
+		end
+
+		if input.KeyCode == Config.Camera.ToggleKey then
+			-- A setting, not a hold: this latches until pressed again.
+			thirdPersonEnabled = not thirdPersonEnabled
+		end
+	end)
+
+	-- Not filtered on gameProcessedEvent, unlike the press. A drag that begins on
+	-- open screen and ends over a GUI element still has to end, or the camera stays
+	-- stuck in rotate mode with the button already released.
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			rotating = false
+		end
 	end)
 
 	-- Camera priority runs after input is gathered and before the frame is drawn,
@@ -231,7 +300,7 @@ function CameraController.Start()
 		-- Re-asserted every frame rather than set once. The engine releases the lock
 		-- on focus loss, and a camera that stops turning after an alt-tab reads as a
 		-- frozen client rather than as a released mouse.
-		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		updateMouseBehaviour()
 
 		applyMouseDelta()
 		updateThirdPersonAlpha(deltaTime)

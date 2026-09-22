@@ -6,27 +6,34 @@
 -- goes through the server and lags, but the aim is resolved locally every frame and
 -- never does.
 --
--- Since the phase 4 playtest the aim ray is the camera's own look direction rather
--- than a ray through a free screen cursor. The reticle therefore sits nailed to the
--- centre of the viewport and never moves within it -- the player aims by turning.
--- The trick still holds, and reads better for it: turning is local and instant,
--- so responsiveness comes off the whole view rather than off a cursor.
+-- How the aim is resolved follows the camera mode, because the two modes put the
+-- cursor in different places:
+--
+--   First person  the cursor is locked to the centre, so the aim ray is the
+--                 camera's own look direction and this dot is the reticle.
+--
+--   Third person  the cursor is free and is itself the aim point, so the ray is
+--                 cast through it and this dot is hidden rather than drawn on top
+--                 of a cursor that already marks the spot.
+--
+-- Either way it resolves locally every frame and never waits on the server.
 --
 -- Nothing in here may wait on, or be corrected by, anything from the server.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Climber.Config)
+
+local CameraController = require(script.Parent.CameraController)
 
 local TargetReticle = {}
 
 local targetPosition = Vector3.zero
 
--- Returns nothing. The dot is placed once and never moves, so unlike the free
--- cursor it replaced there is nothing for the render loop to hold on to.
-local function createGui()
+local function createGui(): Frame
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "Reticle"
 	screenGui.ResetOnSpawn = false
@@ -39,9 +46,9 @@ local function createGui()
 	dot.Name = "Dot"
 	dot.Size = UDim2.fromOffset(8, 8)
 	dot.AnchorPoint = Vector2.new(0.5, 0.5)
-	-- Fixed at the centre and never moved again. IgnoreGuiInset above makes GUI
-	-- space match viewport space, so this lands on the camera's optical centre --
-	-- exactly where the aim ray is cast.
+	-- The first-person resting place. IgnoreGuiInset above makes GUI space match
+	-- viewport space, so this lands on the camera's optical centre -- exactly where
+	-- the first-person aim ray is cast.
 	dot.Position = UDim2.fromScale(0.5, 0.5)
 	dot.BackgroundColor3 = Color3.new(1, 1, 1)
 	dot.BorderSizePixel = 0
@@ -50,6 +57,8 @@ local function createGui()
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = dot
+
+	return dot
 end
 
 -- Mirrors the server's clamp so the drawn target never promises reach the limb
@@ -70,7 +79,7 @@ function TargetReticle.GetTargetPosition(): Vector3
 end
 
 function TargetReticle.Start()
-	createGui()
+	local dot = createGui()
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -100,11 +109,30 @@ function TargetReticle.Start()
 			return
 		end
 
-		-- Straight off the camera rather than through ViewportPointToRay at the
-		-- centre pixel: the look vector *is* the optical centre, with no viewport
-		-- rounding or GUI inset in between.
-		local eye = camera.CFrame.Position
-		local direction = camera.CFrame.LookVector
+		local eye: Vector3
+		local direction: Vector3
+
+		if CameraController.IsThirdPerson() then
+			-- The visible cursor is the aim point, so the ray goes through it and
+			-- the dot stays hidden rather than sitting on top of a cursor that
+			-- already marks the spot. GetMouseLocation pairs with ViewportPointToRay
+			-- by definition, which is why the cursor path uses it and the centre
+			-- path does not need to.
+			dot.Visible = false
+
+			local cursor = UserInputService:GetMouseLocation()
+			local ray = camera:ViewportPointToRay(cursor.X, cursor.Y)
+			eye = ray.Origin
+			direction = ray.Direction
+		else
+			-- Straight off the camera rather than through ViewportPointToRay at the
+			-- centre pixel: the look vector *is* the optical centre, with no viewport
+			-- rounding or GUI inset in between.
+			dot.Visible = true
+
+			eye = camera.CFrame.Position
+			direction = camera.CFrame.LookVector
+		end
 
 		local reach = Config.Grip.MaxTargetDistance * 2
 		local hit = workspace:Raycast(eye, direction * reach, params)
