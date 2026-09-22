@@ -229,12 +229,20 @@ Each client runs its own `CameraController`. In 4-player mode every screen looks
 
 One server module, `LimbAssignment`, is the single source of truth. Every other system asks it who owns a limb; nothing else stores that mapping.
 
-| Players | Assignment | Default keys |
-| --- | --- | --- |
-| 1 | All four limbs | Q / E / Z / C |
-| 2 | Left side / right side | Q + Z, then E + C |
-| 3 | One player takes two limbs | assigned at lobby |
-| 4 | One limb each | Space per player |
+There is no lobby anywhere in the build order, so assignment cannot be negotiated. The layout is fixed and derived from join order alone.
+
+| Players | Player 1 | Player 2 | Player 3 | Player 4 |
+| --- | --- | --- | --- | --- |
+| 1 | all four | — | — | — |
+| 2 | ArmR + LegR | ArmL + LegL | — | — |
+| 3 | ArmR + LegR | ArmL | LegL | — |
+| 4 | ArmR | ArmL | LegR | LegL |
+
+Two properties make this readable rather than arbitrary: player 1 holds `ArmR` in every layout, and arms are handed out before legs. A player's first limb therefore does not move as the headcount changes.
+
+**Keys.** `Q` / `E` / `Z` / `C` map to `ArmR` / `ArmL` / `LegR` / `LegL` and never rebind — the two-player split is exactly "Q + Z, then E + C" because Q/Z are the right side and E/C the left. A player who owns exactly one limb may additionally press `Space` for it, which is what the four-player row of the original key table meant.
+
+**Run start.** With no lobby there has to be a defined moment when the session locks. The run starts `Config.Session.LobbyGraceSeconds` after the first player joins: everyone present at that instant is assigned, and the session locks per decision 1. Anyone arriving later is a spectator — camera and reticle, no limbs. If more than four players are present, the first four by join order are assigned and the rest spectate.
 
 ### Run lifecycle
 
@@ -253,6 +261,12 @@ flowchart TD
 ```
 
 **Disconnects still need handling even with joining locked.** Orphaned limbs reassign to whoever remains rather than freezing or erroring. A 4-player run that loses someone becomes a harder 3-player run, which is a better outcome than a dead session.
+
+The reassignment rule: each orphaned limb goes to the remaining player holding the fewest limbs, ties broken by join order. **Limbs already held do not move.** The result is therefore not the same as the table above for that headcount, and that is deliberate — taking a limb out of someone's hands mid-climb is worse than an uneven split.
+
+**An orphaned limb may be mid-reach.** If the departing player disconnected while holding the key, the last intent the server saw was `isHeld = true`, leaving the limb in `Reaching` with its `AlignPosition` enabled and pulling at a target no release will ever clear. Reassignment drops such a limb to `Free` and disables the align. It does not attempt a grip: a disconnect must not hand out a free hold.
+
+**When the last participant leaves, the session unlocks** and the next player to join opens a fresh grace window. This is not mid-run joining — there is no run left to join — and without it a server whose players have all left stays dead until it restarts.
 
 ### Failure and progress
 
@@ -308,6 +322,8 @@ Keep these small — they fire every frame a limb is active.
 | `AnchorSet` | Server to client | anchorPosition |
 
 Rate-limit `LimbIntent` server-side. It is the obvious exploit vector and the obvious source of bandwidth problems.
+
+**Limb ownership is not one of these events.** It replicates as a per-player attribute written only by `LimbAssignment`, which each client reads for itself. A RemoteEvent would be a second copy of the mapping, and the whole point of `LimbAssignment` is that there is no second copy.
 
 ## Build order and handoff points
 
