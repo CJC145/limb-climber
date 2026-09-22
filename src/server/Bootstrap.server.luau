@@ -48,21 +48,6 @@ local function isFinite(value: Vector3): boolean
 	return true
 end
 
--- Keeps a target inside the limb's plausible reach. Clamped rather than rejected,
--- so aiming past the limit stalls the hand at full stretch instead of dropping the
--- intent and making the arm stutter.
-local function clampToReach(target: Vector3): Vector3
-	local origin = rig.torso.Position
-	local offset = target - origin
-	local distance = offset.Magnitude
-
-	if distance <= Config.Grip.MaxTargetDistance or distance == 0 then
-		return target
-	end
-
-	return origin + offset.Unit * Config.Grip.MaxTargetDistance
-end
-
 Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targetPosition: any, isHeld: any)
 	if typeof(limbId) ~= "string" or typeof(targetPosition) ~= "Vector3" or typeof(isHeld) ~= "boolean" then
 		return
@@ -96,7 +81,14 @@ Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targe
 		perLimb[limb] = now
 	end
 
-	GripService.SetIntent(limb, clampToReach(targetPosition), isHeld)
+	-- Clamped rather than rejected, so aiming past the limit stalls the hand at full
+	-- stretch instead of dropping the intent and making the arm stutter.
+	--
+	-- The envelope is per limb and measured off the rig, so this is also the whole of
+	-- the server's bound on how far a target may be: whatever a client sends, the
+	-- point the align actually chases is inside one limb's own reach. There is no
+	-- second, looser check to keep in step with it.
+	GripService.SetIntent(limb, ClimberRig.ClampToReach(rig.limbs[limb], targetPosition), isHeld)
 end)
 
 Players.PlayerAdded:Connect(function(player)

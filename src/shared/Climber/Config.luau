@@ -65,14 +65,48 @@ Config.JointLimits = {
 }
 
 -- AlignPosition, the primary feel dial. The design doc calls MaxForce out as the
--- main thing to tune but gives no starting number -- all three are guesses.
+-- main thing to tune but gives no starting number -- every value here is a guess.
+--
+-- MaxForce is a fraction of the rig's own weight rather than a raw number, and
+-- ClimberRig multiplies it by the weight it measures off the 14 parts at build.
+--
+-- That is a bug fix, not tidiness. At a raw 10000 the aligns could out-pull gravity
+-- on the whole climber, so once phase 5 unanchored the torso a limb reaching at the
+-- sky flew the entire body. Expressed as a fraction below 1.0 the value is
+-- arithmetically incapable of it: a limb cannot lift a body that weighs more than
+-- the force the limb is permitted to apply.
+--
+-- THE GUARANTEE, and what breaks it. Four limbs can reach at once, so the number
+-- that actually has to stay under 1.0 is the *total*:
+--
+--     nothing gripped   4 x MaxForceWeightFraction x FreefallForceScale  =  0.8
+--     something gripped 3 x MaxForceWeightFraction                       =  2.4
+--
+-- Only the first line is a guarantee, and it is the one that matters -- a body with
+-- nothing holding on must not be able to fly. The second is deliberately allowed to
+-- exceed 1.0: a fourth limb is gripped in that case, the body is hanging off it, and
+-- three limbs hauling against that hold is the gripped arm pulling the body up. That
+-- is climbing. Capping it would delete the mechanic.
+--
+-- So if you raise either dial, keep their product under 0.25.
 --
 -- NOTE: a running server caches this module, so editing the file mid-playtest does
 -- not change anything. ClimberRig mirrors these onto attributes of the rig model so
 -- they can be dragged live in the Properties panel; write the value you settle on
 -- back into this file.
 Config.AlignPosition = {
-	MaxForce = 10000,
+	-- Fraction of the rig's total weight one limb may pull with. Below 1.0 by
+	-- definition -- see above.
+	MaxForceWeightFraction = 0.8,
+
+	-- What that fraction is multiplied by while no limb is gripped. "Heavily reduced"
+	-- rather than zero: the climber has to be able to reach for its first hold from a
+	-- standing start, so this cannot become a gate without deadlocking the spawn.
+	--
+	-- What it buys is that a reach made in mid-air is weak and flaily -- you can
+	-- grab at a passing ledge, but you cannot swim.
+	FreefallForceScale = 0.25,
+
 	Responsiveness = 25,
 	MaxVelocity = 40,
 }
@@ -235,9 +269,23 @@ Config.Grip = {
 	-- cannot grip a wall you are visibly not touching. Guess.
 	DetectRadius = 1.2,
 
-	-- Ceiling on how far an intent target may be from the torso. Server-side
-	-- validation, and the client clamps to it as well. Guess.
+	-- How far a player may point, which is not the same thing as how far a limb can
+	-- go. This is the aim ray's range only: it decides how distant a hold you can put
+	-- the reticle on, and the reach envelope below decides what the limb does about
+	-- it. Guess.
 	MaxTargetDistance = 14,
+
+	-- Fraction of a limb's measured chain length that the limb may actually be sent
+	-- to. ClimberRig measures the chain off the model -- root joint to elbow or knee,
+	-- to wrist or ankle, to the grip point -- so the envelope is the rig's real
+	-- geometry and not a number anyone has to keep in sync with it.
+	--
+	-- Under 1.0 on purpose. At exactly 1.0 the target sits at full extension, which
+	-- is only reachable with a perfectly straight limb, so the align never quite
+	-- arrives and keeps pulling at maximum force forever -- which is the flying bug
+	-- in miniature. A little slack means the hand gets there and the force falls to
+	-- zero on its own, which is what makes a reach settle instead of straining.
+	ReachFraction = 0.95,
 }
 
 -- Input. The doc's solo-player binding is Q / E / Z / C.

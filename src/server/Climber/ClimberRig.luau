@@ -28,6 +28,16 @@ export type Limb = {
 	extremity: BasePart,
 	gripAttachment: Attachment,
 	align: AlignPosition,
+
+	-- Where this limb's reach is measured from: its own root joint on the torso, a
+	-- shoulder or a hip. Not the torso's centre -- an arm's envelope is a sphere
+	-- around the shoulder, and centring it on the body would let the hand be sent
+	-- to points on the far side of the chest that no arm can fold to.
+	root: Attachment,
+
+	-- Radius of that sphere, in studs: the limb's measured chain length scaled by
+	-- Config.Grip.ReachFraction.
+	reach: number,
 }
 
 export type Rig = {
@@ -242,6 +252,67 @@ local LIMB_EXTREMITY: { [LimbId]: string } = {
 	LegL = "FootL",
 }
 
+-- REACH -----------------------------------------------------------------------
+--
+-- How far each limb can actually get, measured rather than declared.
+--
+-- Each chain link names two attachments on the *same* part, so the distance between
+-- them is that segment's length in the part's own local space -- a rigid-body fact
+-- that does not change with the pose, and one that costs nothing to read. Summed
+-- over the three segments it is the limb's full extension from its root joint.
+--
+-- Measuring beats a Config number here because the model is the authority on the
+-- rig's shape. A number would be a second copy of the proportions, and it would go
+-- quietly wrong the first time the rig is remodelled -- which is exactly the kind of
+-- silent drift that is hard to attribute later.
+--
+-- The attachment names are the ones the joint table above already uses, which is
+-- also what makes this a topology table and not a set of magic strings: if a name
+-- here is wrong, the joint that shares it was wrong first and the rig never built.
+
+type Segment = { Part: string, From: string, To: string }
+
+type ReachSpec = {
+	-- On the torso, always. Every limb roots there.
+	RootAttachment: string,
+	Chain: { Segment },
+}
+
+local REACH: { [LimbId]: ReachSpec } = {
+	ArmR = {
+		RootAttachment = "ShoulderR",
+		Chain = {
+			{ Part = "UpperArmR", From = "ShoulderR", To = "ElbowR" },
+			{ Part = "LowerArmR", From = "ElbowR", To = "WristR" },
+			{ Part = "HandR", From = "WristR", To = "Grip" },
+		},
+	},
+	ArmL = {
+		RootAttachment = "ShoulderL",
+		Chain = {
+			{ Part = "UpperArmL", From = "ShoulderL", To = "ElbowL" },
+			{ Part = "LowerArmL", From = "ElbowL", To = "WristL" },
+			{ Part = "HandL", From = "WristL", To = "Grip" },
+		},
+	},
+	LegR = {
+		RootAttachment = "HipR",
+		Chain = {
+			{ Part = "UpperLegR", From = "HipR", To = "KneeR" },
+			{ Part = "LowerLegR", From = "KneeR", To = "AnkleR" },
+			{ Part = "FootR", From = "AnkleR", To = "Grip" },
+		},
+	},
+	LegL = {
+		RootAttachment = "HipL",
+		Chain = {
+			{ Part = "UpperLegL", From = "HipL", To = "KneeL" },
+			{ Part = "LowerLegL", From = "KneeL", To = "AnkleL" },
+			{ Part = "FootL", From = "AnkleL", To = "Grip" },
+		},
+	},
+}
+
 --------------------------------------------------------------------------------
 
 local ClimberRig = {}
@@ -336,6 +407,95 @@ local function buildJoints(model: Model)
 		constraint.UpperAngle = spec.Max
 		constraint.Parent = proximal
 	end
+end
+
+-- FORCE -----------------------------------------------------------------------
+--
+-- Two things set the aligns' MaxForce now, so neither of them may write it directly.
+-- The Studio dial changes the fraction; GripService changes the scale; this module
+-- multiplies them by the measured weight and is the only writer.
+--
+-- Module-level, because there is one climber -- the same reason the respawn pose
+-- below is held here rather than threaded through the Rig record.
+
+local aligns: { AlignPosition } = {}
+
+-- Newtons-equivalent: total mass times gravity, in the units AlignPosition.MaxForce
+-- is expressed in. Measured once at build, after the densities are applied.
+--
+-- Read off workspace.Gravity at that moment. Changing gravity mid-session would
+-- leave this stale, which is worth knowing and not worth a signal -- nothing in this
+-- project changes it.
+local rigWeight = 0
+
+local forceFraction = 0
+local forceScale = 1
+
+local function applyMaxForce()
+	local force = rigWeight * forceFraction * forceScale
+	for _, align in aligns do
+		align.MaxForce = force
+	end
+end
+
+-- Weighs the rig by summing its parts. Iterating PART_GRADE rather than the model's
+-- descendants so the total counts the 14 parts the design doc specifies and nothing
+-- that might later be parented into the model alongside them.
+local function measureWeight(model: Model): number
+	local mass = 0
+	for partName in PART_GRADE do
+		mass += findPart(model, partName):GetMass()
+	end
+	return mass * workspace.Gravity
+end
+
+-- Sums a limb's chain in its own local space. See REACH.
+local function measureReach(model: Model, spec: ReachSpec): number
+	local length = 0
+
+	for _, segment in spec.Chain do
+		local part = findPart(model, segment.Part)
+		local from = findAttachment(part, segment.From)
+		local to = findAttachment(part, segment.To)
+		length += (from.Position - to.Position).Magnitude
+	end
+
+	return length * Config.Grip.ReachFraction
+end
+
+-- How hard a reach pulls, as a multiple of the configured fraction. GripService
+-- calls this when the number of gripped limbs crosses zero in either direction.
+--
+-- Deliberately a scale and not a gate. A climber with nothing gripped still has to
+-- be able to reach for its first hold, so there is no state in which a limb refuses
+-- to move -- only one in which it moves weakly.
+function ClimberRig.SetReachForceScale(scale: number)
+	forceScale = scale
+	applyMaxForce()
+end
+
+-- Clamps a target to what this limb can physically get to.
+--
+-- This is the other half of the flying fix, and the half that does the real work.
+-- The old clamp was 14 studs from the torso's centre, which is several times an
+-- arm's length, so a target above the head was permanently unreachable and the align
+-- chased it at full force for as long as the key was held -- a sustained upward pull
+-- on the body with nothing to pull against. Inside the envelope the hand arrives,
+-- the error goes to zero, and the force goes with it. The limb stops straining
+-- because it has nothing left to strain toward.
+--
+-- Measured from the limb's own root rather than the torso, so the direction that
+-- survives the clamp is the direction the shoulder or hip actually has to send it.
+function ClimberRig.ClampToReach(limb: Limb, target: Vector3): Vector3
+	local origin = limb.root.WorldPosition
+	local offset = target - origin
+	local distance = offset.Magnitude
+
+	if distance <= limb.reach or distance == 0 then
+		return target
+	end
+
+	return origin + offset.Unit * limb.reach
 end
 
 -- Mirrors a Config value onto an attribute of the rig model and applies it on change.
@@ -454,8 +614,13 @@ function ClimberRig.Build(): Rig
 
 	buildJoints(model)
 
+	-- Weighed after the densities are applied and before anything is asked to pull
+	-- against it: every force below is a multiple of this number.
+	rigWeight = measureWeight(model)
+	forceScale = 1
+
 	local limbs: { [LimbId]: Limb } = {}
-	local aligns: { AlignPosition } = {}
+	aligns = {}
 
 	for limbId, extremityName in LIMB_EXTREMITY do
 		local extremity = findPart(model, extremityName)
@@ -478,11 +643,15 @@ function ClimberRig.Build(): Rig
 
 		table.insert(aligns, align)
 
+		local spec = REACH[limbId]
+
 		limbs[limbId] = {
 			limbId = limbId,
 			extremity = extremity,
 			gripAttachment = gripAttachment,
 			align = align,
+			root = findAttachment(torso, spec.RootAttachment),
+			reach = measureReach(model, spec),
 		}
 	end
 
@@ -490,10 +659,15 @@ function ClimberRig.Build(): Rig
 
 	-- One dial per property, applied to all four limbs. Tuning one limb against the
 	-- others is not a thing anyone wants to do.
-	bindTunable(model, "MaxForce", Config.AlignPosition.MaxForce, function(value)
-		for _, align in aligns do
-			align.MaxForce = value
-		end
+	--
+	-- The force dial is the fraction, not the force. Dragging it in Studio reads as
+	-- "what share of its own weight may a limb pull with", which is a question with a
+	-- meaningful answer either side of 1.0 -- unlike a raw number, where the value
+	-- that flies the body and the value that feels good look equally arbitrary. The
+	-- multiplication into a real force happens in applyMaxForce.
+	bindTunable(model, "MaxForceWeightFraction", Config.AlignPosition.MaxForceWeightFraction, function(value)
+		forceFraction = value
+		applyMaxForce()
 	end)
 	bindTunable(model, "Responsiveness", Config.AlignPosition.Responsiveness, function(value)
 		for _, align in aligns do

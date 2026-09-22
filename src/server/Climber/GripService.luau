@@ -221,6 +221,19 @@ end
 local BROADCAST_INTERVAL = 1 / Config.Net.LimbStateMaxPerSecond
 local broadcastCountdown = 0
 
+-- The reach force scale currently pushed to ClimberRig, so the write happens on the
+-- frame the gripped count crosses zero rather than on every frame.
+--
+-- Full strength once anything is holding on; heavily reduced while nothing is. The
+-- reason is the flying bug: with the torso unanchored and no hold to pull against,
+-- four aligns at full force had nothing to move except the body. Weakened in the air
+-- they can still grab at a passing ledge but cannot swim.
+--
+-- Not a gate, deliberately. A climber standing at the spawn with nothing gripped has
+-- to be able to reach for its first hold, and "must be gripped to reach" would leave
+-- it unable to ever start.
+local appliedForceScale = 1
+
 local function grippedCount(): number
 	local count = 0
 	for _, runtime in runtimes do
@@ -256,6 +269,15 @@ local function step(deltaTime: number)
 			releaseGrip(runtime)
 			setState(runtime, "Free")
 		end
+	end
+
+	-- Counted again rather than reusing `gripped`, because the pass above may have
+	-- just exhausted the last hold. A body that has this instant lost its grip is
+	-- airborne, and should not spend a frame still pulling as though it were not.
+	local scale = if grippedCount() > 0 then 1 else Config.AlignPosition.FreefallForceScale
+	if scale ~= appliedForceScale then
+		appliedForceScale = scale
+		ClimberRig.SetReachForceScale(scale)
 	end
 
 	broadcastCountdown -= deltaTime
@@ -321,7 +343,14 @@ function GripService.Bind(rig: ClimberRig.Rig)
 	if stepConnection then
 		stepConnection:Disconnect()
 	end
+
 	broadcastCountdown = 0
+
+	-- Matches the scale ClimberRig.Build leaves behind, so the first heartbeat sees a
+	-- real change and drops the rig to its airborne force rather than believing it
+	-- has already done so.
+	appliedForceScale = 1
+
 	stepConnection = RunService.Heartbeat:Connect(step)
 end
 

@@ -61,19 +61,20 @@ local function createGui(): Frame
 	return dot
 end
 
--- Mirrors the server's clamp so the drawn target never promises reach the limb
--- does not have.
-local function clampToReach(target: Vector3, origin: Vector3): Vector3
-	local offset = target - origin
-	local distance = offset.Magnitude
-
-	if distance <= Config.Grip.MaxTargetDistance or distance == 0 then
-		return target
-	end
-
-	return origin + offset.Unit * Config.Grip.MaxTargetDistance
-end
-
+-- The aim point, unclamped.
+--
+-- This used to mirror the server's reach clamp, back when that clamp was one radius
+-- around the torso and could therefore be mirrored. It is now a separate envelope
+-- per limb, measured around a shoulder or a hip, and one reticle cannot stand for
+-- four of them.
+--
+-- Nothing is lost by dropping it. The clamp never reached the screen in either view
+-- mode -- the first-person dot is pinned to the centre of the viewport and the
+-- third-person dot is hidden behind the cursor -- so its only effect was on the
+-- value sent, and the server clamps that authoritatively anyway. Mirroring it here
+-- would have been a second copy of the rig's proportions living on the client, and
+-- the point of aiming past a hold is that the limb stretches toward it, which is
+-- what the server's clamp already does.
 function TargetReticle.GetTargetPosition(): Vector3
 	return targetPosition
 end
@@ -84,20 +85,17 @@ function TargetReticle.Start()
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 
-	-- The clamp origin. Phase 5 unanchored the torso, so this is a live part now
-	-- rather than the constant it used to be: the reach limit is measured from where
-	-- the body actually is, and a body that has swung or fallen since the last frame
-	-- has moved its own reach with it.
-	local torso: BasePart? = nil
-
-	-- Waits for the rig model off the main path so the dot draws from the first frame.
-	-- FilterDescendantsInstances is evaluated per cast, so rig parts are excluded as
-	-- they arrive without this having to wait for any of them; the torso is waited for
-	-- afterwards because the clamp is the one thing here that does need a part.
+	-- Waits for the rig model only, never for a part inside it, and off the main path
+	-- so the dot draws from the first frame. FilterDescendantsInstances is evaluated
+	-- per cast, so rig parts are excluded as they arrive without this having to wait
+	-- for any of them.
+	--
+	-- Nothing else here reads the rig. The aim is a ray from the camera into the
+	-- world, and with the clamp gone this module no longer needs to know where the
+	-- body is at all -- which is the right shape for the one system whose entire job
+	-- is to resolve without waiting for anything.
 	task.spawn(function()
-		local rig = workspace:WaitForChild(Config.Rig.ModelName)
-		params.FilterDescendantsInstances = { rig }
-		torso = rig:WaitForChild("Torso") :: BasePart
+		params.FilterDescendantsInstances = { workspace:WaitForChild(Config.Rig.ModelName) }
 	end)
 
 	-- Bound one priority after CameraController rather than on RenderStepped, which
@@ -135,15 +133,14 @@ function TargetReticle.Start()
 			direction = camera.CFrame.LookVector
 		end
 
-		local reach = Config.Grip.MaxTargetDistance * 2
+		-- The full aim range, not double it. The doubling used to exist so the ray
+		-- could find a surface beyond the clamp and still give the clamp a direction
+		-- to keep; with no clamp here, MaxTargetDistance is simply how far a player
+		-- may point and the ray is exactly that long.
+		local reach = Config.Grip.MaxTargetDistance
 		local hit = workspace:Raycast(eye, direction * reach, params)
 
-		local aim = if hit then hit.Position else eye + direction * reach
-
-		-- SpawnPosition only for the few frames before the rig replicates. Once the
-		-- torso is in hand this never reads Config for a position again.
-		local origin = if torso then torso.Position else Config.Rig.SpawnPosition
-		targetPosition = clampToReach(aim, origin)
+		targetPosition = if hit then hit.Position else eye + direction * reach
 	end)
 end
 
