@@ -81,6 +81,12 @@ Net.LimbIntent.OnServerEvent:Connect(function(player: Player, limbId: any, targe
 end)
 
 Players.PlayerAdded:Connect(function(player)
+	-- ReplicationFocus normally defaults to the character's root part. There is no
+	-- character here, so without this the client has no focus and, under
+	-- StreamingEnabled, the rig and the wall never stream in at all. Harmless when
+	-- streaming is off.
+	player.ReplicationFocus = rig.torso
+
 	for limbId in rig.limbs do
 		if LimbAssignment.GetOwner(limbId) == nil then
 			LimbAssignment.Assign(player, limbId)

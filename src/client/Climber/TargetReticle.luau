@@ -63,12 +63,22 @@ end
 function TargetReticle.Start()
 	local dot = createGui()
 
-	local rig = workspace:WaitForChild(Config.Rig.ModelName) :: Model
-	local torso = rig:WaitForChild("Torso") :: BasePart
-
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { rig }
+
+	-- Waits for the rig model only, never for a part inside it, and off the main
+	-- path so the dot draws from the first frame. FilterDescendantsInstances is
+	-- evaluated per cast, so rig parts are excluded as they arrive without this
+	-- having to wait for any of them.
+	task.spawn(function()
+		local rig = workspace:WaitForChild(Config.Rig.ModelName)
+		params.FilterDescendantsInstances = { rig }
+	end)
+
+	-- Same reasoning as CameraController: the phase 1 torso is anchored at
+	-- SpawnPosition, so the clamp origin is known without replication. This has to
+	-- read the live torso once the torso can move.
+	local origin = Config.Rig.SpawnPosition
 
 	RunService.RenderStepped:Connect(function()
 		local camera = workspace.CurrentCamera
@@ -84,7 +94,7 @@ function TargetReticle.Start()
 		local hit = workspace:Raycast(ray.Origin, ray.Direction * reach, params)
 
 		local aim = if hit then hit.Position else ray.Origin + ray.Direction * reach
-		targetPosition = clampToReach(aim, torso.Position)
+		targetPosition = clampToReach(aim, origin)
 	end)
 end
 
