@@ -122,9 +122,16 @@ Config.Camera = {
 	-- stops being meaningful and the view can flip through the pole. Degrees.
 	MaxPitch = 80,
 
-	-- Third-person rest pose, measured back from the eye along the look direction.
+	-- Third-person orbit. The camera sits this far back from the pivot along its own
+	-- look direction and always looks straight at it, so pitching swings the camera
+	-- around the body rather than sliding it up the frame.
 	ThirdPersonDistance = 14,
-	ThirdPersonHeight = 3,
+
+	-- How far above the torso's centre that pivot sits. The torso rather than the
+	-- head, because the head is the top of the body and orbiting it rides the whole
+	-- frame high; this offset lifts the pivot off the torso's middle to roughly
+	-- chest or shoulder height. Guess, and a feel dial -- expect to tune it by eye.
+	ThirdPersonOrbitHeight = 1,
 
 	-- A setting, not a mode: this latches until pressed again. Free of the limb
 	-- keys (Q/E/Z/C) and of Space.

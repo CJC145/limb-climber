@@ -206,12 +206,14 @@ What changed is the second bullet. Damping the head's orientation was the origin
 
 The two view modes take their input differently, and therefore aim differently. This is deliberate: each mode uses the cursor convention players already expect from it.
 
-| | Cursor | Turning the view | Aim ray | Reticle |
-| --- | --- | --- | --- | --- |
-| **First person** | Locked to centre, hidden | Any mouse movement | Camera's look direction | Dot fixed at centre |
-| **Third person** | Free and visible | Left button held and dragged | Through the cursor | The cursor itself; dot hidden |
+| | Cursor | Turning the view | Pivot | Aim ray | Reticle |
+| --- | --- | --- | --- | --- | --- |
+| **First person** | Locked to centre, hidden | Any mouse movement | Head | Camera's look direction | Dot fixed at centre |
+| **Third person** | Free and visible | Right button held and dragged | Torso, raised to chest height | Through the cursor | The cursor itself; dot hidden |
 
-First person is the intended experience and is the stricter of the two: the player aims by turning, and the reticle never moves within the viewport. Third person is Roblox's own camera, because a player who has reached for the third-person toggle has reached for the familiar thing and should get it — free cursor, click-drag to look, point at what you want. During a drag the cursor is pinned where it was pressed, as Roblox's camera does, so it cannot run off the edge mid-rotation.
+First person is the intended experience and is the stricter of the two: the player aims by turning, and the reticle never moves within the viewport. Third person is Roblox's own camera, because a player who has reached for the third-person toggle has reached for the familiar thing and should get it — free cursor, right-drag to look, point at what you want. During a drag the cursor is pinned where it was pressed, as Roblox's camera does, so it cannot run off the edge mid-rotation.
+
+**The two modes pivot around different parts**, which is not an inconsistency but the point. First person sits at the head because that is where eyes go. Third person orbits the torso, raised a little toward the chest: the head is the top of the body, so pivoting on it puts the orbit centre above everything the player needs to see and rides the whole frame high. Third person is a true orbit — the camera sits back along its own look direction from the pivot and always looks straight at it, so pitching swings the camera around the body rather than sliding it up the frame.
 
 Third person aiming through the cursor is not a concession, it is the better fit: pulled back from the body, the player can see several holds at once and point at one without swinging the whole view to face it.
 

@@ -27,8 +27,12 @@
 --                 moves within the viewport -- the player aims by turning.
 --
 --   Third person  Roblox's own camera. Free cursor, and the view turns only while
---                 the left button is held. Aiming is through the cursor, so the
+--                 the right button is held. Aiming is through the cursor, so the
 --                 player points at a hold without reorienting the whole view.
+--
+-- The two also pivot around different parts. First person sits at the head, which
+-- is where eyes go. Third person orbits the torso, because orbiting the head puts
+-- the pivot at the top of the body and the whole frame rides too high.
 --
 -- The design doc's latency trick holds either way: both resolve locally and
 -- instantly, and only the limb's pursuit of the target goes through the server.
@@ -54,10 +58,14 @@ local TWO_PI = math.pi * 2
 
 -- RIG ------------------------------------------------------------------------
 
+-- First person sits at the head; third person orbits the torso. Both are read for
+-- position only -- no orientation of either part reaches the camera.
 local head: BasePart? = nil
+local torso: BasePart? = nil
 
 local function resolveRig()
 	local model = workspace:WaitForChild(Config.Rig.ModelName)
+	torso = model:WaitForChild("Torso") :: BasePart
 	head = model:WaitForChild("Head") :: BasePart
 end
 
@@ -88,12 +96,17 @@ end
 
 -- STATE ----------------------------------------------------------------------
 
--- The damped follow of the head's position. The eye offset is applied afterwards,
--- in the camera's own frame, so the offset is rigidly attached to a view that never
--- rolls rather than to a head that does.
-local stabilisedPosition = Config.Rig.SpawnPosition
+-- Damped follows of the two parts the camera pivots around. Offsets are applied
+-- afterwards, in the camera's own frame, so they are rigidly attached to a view
+-- that never rolls rather than to a body part that does.
+--
+-- Both are damped at the same rate. The torso is the heaviest part and flails
+-- least, so it would tolerate a looser follow, but a second dial would only be
+-- something else to get wrong while tuning the first.
+local stabilisedHead = Config.Rig.SpawnPosition
+local stabilisedTorso = Config.Rig.SpawnPosition
 
--- False until the head has been seen once. The first frame snaps rather than damps,
+-- False until the rig has been seen once. The first frame snaps rather than damps,
 -- because easing in from the bootstrap vantage would open every session with an
 -- unrequested camera move.
 local tracking = false
@@ -109,7 +122,7 @@ local pendingDelta = Vector2.zero
 local thirdPersonAlpha = 0
 local thirdPersonEnabled = false
 
--- Left button held. Only third person consults it: first person turns on every
+-- Right button held. Only third person consults it: first person turns on every
 -- mouse movement, held or not.
 --
 -- Tracked off the latch rather than the blend, so the cursor is freed the instant
@@ -185,17 +198,17 @@ local function applyMouseDelta()
 	pitch = math.clamp(pitch - delta.Y * Config.Camera.MouseSensitivity, -MAX_PITCH, MAX_PITCH)
 end
 
-local function updateStabilisedPosition(headPart: BasePart, deltaTime: number)
+local function updateStabilisedPositions(headPart: BasePart, torsoPart: BasePart, deltaTime: number)
 	if not tracking then
 		tracking = true
-		stabilisedPosition = headPart.Position
+		stabilisedHead = headPart.Position
+		stabilisedTorso = torsoPart.Position
 		return
 	end
 
-	stabilisedPosition = stabilisedPosition:Lerp(
-		headPart.Position,
-		smoothAlpha(Config.Camera.PositionFollowRate, deltaTime)
-	)
+	local alpha = smoothAlpha(Config.Camera.PositionFollowRate, deltaTime)
+	stabilisedHead = stabilisedHead:Lerp(headPart.Position, alpha)
+	stabilisedTorso = stabilisedTorso:Lerp(torsoPart.Position, alpha)
 end
 
 local function updateThirdPersonAlpha(deltaTime: number)
@@ -207,23 +220,29 @@ local function updateThirdPersonAlpha(deltaTime: number)
 	)
 end
 
--- Where the camera sits: at the eyes in first person, pulled back along the same
--- look direction in third. Both share one orientation, so the toggle moves the
--- camera without ever turning it.
-local function eyeCFrame(headPart: BasePart): CFrame
+-- Where the camera sits: at the eyes in first person, orbiting the torso in third.
+-- Both share one orientation, so the toggle moves the camera without ever turning
+-- it, and the blend between them is a straight line in position only.
+local function viewCFrame(headPart: BasePart): CFrame
 	local rot = rotation()
 
 	-- Measured from the head's front face rather than its centre, so the camera
 	-- clears the head whatever proportions the modelled rig has. A fixed offset
 	-- would sit inside a larger head and show the player its interior.
 	local forward = headPart.Size.Z / 2 + Config.Camera.EyeClearance
-	local eye = stabilisedPosition + rot * Vector3.new(0, Config.Camera.EyeHeight, -forward)
+	local eye = stabilisedHead + rot * Vector3.new(0, Config.Camera.EyeHeight, -forward)
 
-	local pulledBack = eye
-		- rot.LookVector * Config.Camera.ThirdPersonDistance
-		+ Vector3.yAxis * Config.Camera.ThirdPersonHeight
+	-- A real orbit: the camera is exactly ThirdPersonDistance back along its own
+	-- look direction from the pivot, so it always looks straight at the pivot and
+	-- pitching swings it around the body rather than sliding it up the frame.
+	--
+	-- Pivoting on the torso rather than the head is what keeps the shot at body
+	-- height. The head is the top of the body, so orbiting it puts the pivot above
+	-- everything the player needs to see and rides the whole frame high.
+	local pivot = stabilisedTorso + Vector3.yAxis * Config.Camera.ThirdPersonOrbitHeight
+	local orbit = pivot - rot.LookVector * Config.Camera.ThirdPersonDistance
 
-	return CFrame.new(eye:Lerp(pulledBack, ease(thirdPersonAlpha))) * rot
+	return CFrame.new(eye:Lerp(orbit, ease(thirdPersonAlpha))) * rot
 end
 
 --------------------------------------------------------------------------------
@@ -264,7 +283,7 @@ function CameraController.Start()
 			return
 		end
 
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input.UserInputType == Enum.UserInputType.MouseButton2 then
 			-- Dropped, not kept. Movement can land between the last frame and this
 			-- press, and applying it on the first frame of the drag would kick the
 			-- view by however far the cursor travelled on its way to the click.
@@ -283,7 +302,7 @@ function CameraController.Start()
 	-- open screen and ends over a GUI element still has to end, or the camera stays
 	-- stuck in rotate mode with the button already released.
 	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input.UserInputType == Enum.UserInputType.MouseButton2 then
 			rotating = false
 		end
 	end)
@@ -306,13 +325,14 @@ function CameraController.Start()
 		updateThirdPersonAlpha(deltaTime)
 
 		local headPart = head
-		if not headPart then
+		local torsoPart = torso
+		if not headPart or not torsoPart then
 			camera.CFrame = bootstrapCFrame
 			return
 		end
 
-		updateStabilisedPosition(headPart, deltaTime)
-		camera.CFrame = eyeCFrame(headPart)
+		updateStabilisedPositions(headPart, torsoPart, deltaTime)
+		camera.CFrame = viewCFrame(headPart)
 	end)
 end
 
