@@ -14,7 +14,7 @@ If anything below contradicts it, the design document wins.
 
 ## Current phase
 
-    PHASE: 1
+    PHASE: 2
     STATUS: not started
 
 Update this block when a phase is accepted. Build only the current phase.
