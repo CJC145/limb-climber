@@ -644,6 +644,9 @@ end
 -- at +X. A right-handed rotation about +Z carries +X toward +Y -- the right side
 -- rises and the body tips leftward -- so a positive direction is a roll to the left.
 --
+-- Left and right here are the body's own sides, derived from the facing and not from
+-- part names. The model names them mirrored: the right hand at +X is HandL.
+--
 -- Derived from the facing convention rather than observed, and a sign error here
 -- produces a perfectly working mechanic with its controls swapped. If A tips the
 -- body the wrong way, negate this and nothing else.

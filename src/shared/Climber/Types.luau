@@ -41,7 +41,8 @@ export type LimbPull = {
 }
 
 -- Client -> server. Which way this player wants the torso rolled: +1 left, -1 right,
--- 0 not at all. Edge-triggered like LimbPull.
+-- 0 not at all. Edge-triggered like LimbPull. Left and right are the climber's own
+-- sides, not the L and R in limb ids, which the model names mirrored.
 --
 -- Deliberately not a magnitude. A client sending 4.7 would be asking for a torque
 -- nobody agreed to, so the server takes the sign and supplies the strength itself.

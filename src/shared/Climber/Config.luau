@@ -524,8 +524,10 @@ Config.Grip = {
 --
 -- Which key goes to which limb is fixed by the doc's two-player split, "Q + Z, then
 -- E + C", described as left side / right side: Q and Z have to be the same side of
--- the body, not the same row of the keyboard. Q is the right arm, so Q/Z are the
--- right side and E/C the left. Phase 3 can then split a session without rebinding.
+-- the body, not the same row of the keyboard. Q is ArmR, which despite its id is the
+-- climber's left arm -- the model's R and L parts are named mirrored, every *R part
+-- on the body's left -- so Q/Z are the left side and E/C the right, matching where
+-- they sit on the keyboard. Phase 3 can then split a session without rebinding.
 -- Annotated through a named type rather than left to inference. Without it the
 -- string literals below are inferred as plain `string`, and every consumer that
 -- wants a LimbId out of LimbOrder has to cast to get one.
