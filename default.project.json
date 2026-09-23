@@ -22,7 +22,7 @@
       "Assets": {
         "$className": "Folder",
         "ClimberRig": {
-          "$path": "assets/climber.rbxm"
+          "$path": "assets/climber-v2.rbxm"
         }
       }
     },

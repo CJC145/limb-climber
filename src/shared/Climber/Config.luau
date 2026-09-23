@@ -260,7 +260,12 @@ Config.Joints = {
 	-- third off rather than a halving: the value before this one was a free-swinging
 	-- zero, and the useful range is somewhere between the two rather than near
 	-- either end.
-	BallSocketFriction = 160,
+	--
+	-- Down from 160 to 20% of it for the V2 rig, which is about a sixth the mass on
+	-- limbs about 0.6x as long, so the gravity torque this is meant to sit near fell
+	-- by roughly ten. 160 on V2 read as stiff and robotic. Guess -- and on the old rig
+	-- this would be close to the "limp" end, so it does not carry back to it.
+	BallSocketFriction = 32,
 
 	-- ServoMaxTorque on the idle elbows and knees. Same intent as the friction above
 	-- and the same scale, but it is doing more work -- see RestBend.
@@ -274,7 +279,10 @@ Config.Joints = {
 	-- complaint. Kept equal to it, not because the two mechanisms are interchangeable
 	-- -- they are not -- but because nothing yet suggests an elbow wants a different
 	-- amount of tone from a shoulder. Split them the moment something does.
-	HingeTone = 160,
+	--
+	-- Down from 160 to 20% of it for the V2 rig, with the friction above and for the
+	-- same reason. Guess.
+	HingeTone = 32,
 
 	-- How fast a relaxed elbow or knee settles toward its rest bend, in radians per
 	-- second. This is a limb relaxing, not a limb acting, so it is deliberately
@@ -320,7 +328,10 @@ Config.Pull = {
 	-- so with a weight in the low thousands and a forearm of a stud or two, this wants
 	-- to be thousands rather than tens. Too low and a pull does nothing on a loaded
 	-- limb; too high and the climber snaps upward like a mousetrap.
-	MotorMaxTorque = 6000,
+	--
+	-- Down from 6000 by a factor of ten for the V2 rig: a sixth of the weight on a
+	-- forearm about 0.6x as long. Scaled by that reasoning, not by feel. Guess.
+	MotorMaxTorque = 600,
 
 	-- Radians per second the joint sweeps while pulling. A 145 degree elbow is about
 	-- 2.5 radians end to end, so this is a little under a second for a full haul --
@@ -348,7 +359,10 @@ Config.Roll = {
 	-- that turns one joint against one limb, this turns the whole climber. Too low
 	-- and a sprawled body cannot right itself, which is the entire feature; too high
 	-- and a tap flips the climber onto its face.
-	Torque = 15000,
+	--
+	-- Down from 15000 by a factor of ten for the V2 rig, for the same reason as
+	-- Pull.MotorMaxTorque: a sixth of the weight on about 0.6x the leverage. Guess.
+	Torque = 1500,
 
 	-- Multiplied in while the body is airborne: nothing gripped and nothing
 	-- underneath. Deliberately the same shape of dial as FreefallForceScale, and
@@ -516,8 +530,10 @@ Config.Grip = {
 	-- specifically so the body can pivot around the hold, and calls that out as what
 	-- makes hanging from one hand look right. This is meant to settle the swing, not
 	-- delete it -- enough is when a grip stops ringing, not when the body stops moving.
+	--
+	-- Down from 800 to 20% of it for the V2 rig, alongside the body's joint friction.
 	-- Guess.
-	DampingTorque = 800,
+	DampingTorque = 160,
 }
 
 -- Input. The doc's solo-player binding is Q / E / Z / C.
