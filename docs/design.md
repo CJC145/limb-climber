@@ -225,17 +225,42 @@ Tag parts in Studio; a config table maps tag to behaviour. Building the map beco
 | --- | --- | --- | --- |
 | `Rock` | 1.0 | — | The default climbable surface |
 | `Ice` | 0.0 | Ice screw | Ungrippable bare-handed |
-| `Metal` | 0.6 | Climbing gloves | Slippery but possible |
-| `Crumbling` | 1.0 | — | Grips normally, then fails after 3–5 seconds |
+| `Metal` | 0.6 | — (gloves help) | Slippery but possible: grippable bare-handed, expensive to hold |
+| `Crumbling` | 1.0 | — | Grips normally, then fails after a fixed time under load |
 | `Ungrippable` | 0.0 | nothing | Hard boundary; scenery and walls |
 
 Implement the full tag system in phase 1 even though only `Rock` is needed. Adding it later means revisiting every grip call site.
+
+**The Metal row was revised at the start of phase 6.** It used to say "unlocked by climbing gloves" beside a base grip of 0.6 and "slippery but possible", which cannot all be true: a surface with non-zero base grip is not locked. The base grip wins. Bare-handed Metal grips, and gloves make it affordable rather than possible — see grip strength below.
+
+### What grip strength means
+
+**Added at the start of phase 6. This was a gap, not a tuning problem.** `CanGrip` has returned a strength since phase 1 and nothing read it, so a 0.6 surface behaved exactly like a 1.0 one and a strength multiplier had nothing to multiply.
+
+**Strength divides the gripping limb's stamina drain.** A limb paying the ordinary drain for its row pays `drain / strength` instead. Only a cost is divided — the four-limb row is a regeneration, and dividing a regeneration by a small strength would make a slippery hold a better rest than a good one.
+
+| Hold | Strength | Drain vs Rock |
+| --- | --- | --- |
+| Rock | 1.0 | 1× |
+| Metal, bare | 0.6 | 1.67× |
+| Metal, gloved | 0.9 | 1.11× |
+| Rock, gloved | 1.5 | 0.67× |
+
+This reuses the one number the pacing already runs on, rather than adding a second failure mode such as grips slipping under force. A weak hold is one you cannot stay on for long, which the stamina bar already shows.
+
+### Crumbling
+
+**Added at the start of phase 6.** A `Crumbling` part keeps a load timer: it runs while any limb is gripped to the part and does **not** reset on release. When it reaches the tag's `FailAfterSeconds`, every grip on the part releases, and the part is unanchored and falls. It stays server-owned and does not collide with the rig. It is restored at the next run reset.
+
+**Cumulative, not per grip,** because a per-grip timer is beaten by tapping: release and re-grip before it fires, forever. Cumulative means a crumbling hold is a budget the team spends, which is the same shape as a consumable tool.
+
+**Fixed, not random.** The original row said 3–5 seconds. A random failure time means a route that works once and fails on the next attempt with no visible cause, which reads as the game being broken rather than hard. The time is a fixed per-tag value in `Config`, so players can learn a hold's timing.
 
 ### Two tool families
 
 These look similar in a design doc and behave nothing alike in code. **Conflating them causes a rewrite.** All tools are consumable per decision 2.
 
-**Grip modifiers** — pure inputs to `CanGrip`, no world state, trivial to add.
+**Grip modifiers** — no world state, trivial to add.
 
 | Tool | Effect | Uses |
 | --- | --- | --- |
@@ -243,17 +268,87 @@ These look similar in a design doc and behave nothing alike in code. **Conflatin
 | Climbing gloves | Grip strength ×1.5 | 5 grips |
 | Chalk | Stamina regen ×2 for 30s | 1 |
 
+Ice screws and gloves are inputs to `CanGrip`. **Chalk is not**, and this is a refinement of the original wording rather than an exception to it: chalk never decides whether a grip happens, only how fast stamina comes back, so it is read by the stamina step. It belongs in this family because it has no world state, not because of where it is read.
+
 **World anchors** — spawn real instances with their own lifecycle, ownership and cleanup.
 
 | Tool | Effect | Uses |
 | --- | --- | --- |
-| Piton | Drives a permanent new hold into any surface | 1 |
-| Rope | `RopeConstraint` from torso to a fixed point | 1 |
-| Grappling hook | Flings one extremity to a distant point | 1 |
+| Piton | Drives a permanent new hold into a surface | 1 |
+| Rope | `RopeConstraint` from torso to a fixed point, as an auto-belay | 1 |
+| Grappling hook | **Deferred** — see below | — |
 
 World anchors are also the checkpoint system — see the next section. Every anchor is therefore a genuine decision: spend it as a safety net now, or save it and risk the fall.
 
 **Inventory is shared, not per-player.** One pool for the whole team. In 4-player mode this forces an argument about who gets the last piton, which is exactly the kind of friction the game wants.
+
+### Using a tool
+
+**Added at the start of phase 6.** Every tool is used on a limb, which is why `ToolUse` carries a `limbId`. Using a tool spends one from the shared pool at that moment, per decision 2 — never later, and never on a use that fails its checks.
+
+- **Ice screw** stays on the limb until that limb grips `Ice`, and is consumed by that grip. A grip on anything else leaves it in place.
+- **Gloves** go on the limb and count down on each of its next five grips, on any surface.
+- **Chalk** applies to the whole body for its duration. The limb it was used on is ignored — one chalk bag, one body.
+- **Piton** — see below.
+- **Rope** — see below.
+
+What each limb is carrying shows on the HUD, per decision 5. Other players need to be able to see that the left hand has the last ice screw.
+
+### Pitons
+
+The limb must be touching a surface, judged the same way a grip is. The piton spawns at the nearest point on that surface, anchored, and **is tagged `Rock`**. It is a hold like any other, so `CanGrip` handles it with no special case. The limb is not gripped to it automatically; the player places a hand or foot on it like any other hold.
+
+"Any surface" in the original table meant any surface a hand can fail on, which is the point of the tool: a hold on `Ice` or `Metal`. It excludes:
+
+- `Ungrippable` — a hard boundary stays hard
+- `Crumbling` — a permanent hold in a surface that is about to fall away is a contradiction
+- untagged parts — geometry opts in to being climbable, and a piton does not bypass that
+
+### Ropes
+
+**The rope is an auto-belay.** It is fixed at the current grip point of the limb it is used on, so that limb must be gripped. Its other end is the torso.
+
+- While the torso is not falling, the rope's `Length` pays out to follow it, plus a little slack.
+- While the torso is falling, the length is locked, so the rope catches.
+- "Falling" is AnchorService's freefall test — the same one the respawn and the roll already use. There is one notion of "in the air" in this project.
+
+**Length only ever grows.** A rope can therefore never haul the body, and it respects the rule that nothing adds a force to the torso. It is a passive tether that tightens only when the body falls into it.
+
+**Ropes persist, but only the newest is tied to the body.** Placing a second rope does not remove the first: its anchor stays in the world until the run resets, because a placed anchor is a checkpoint, and a checkpoint that disappears when the next one is placed is not one. What placing a new rope does remove is the old rope's `RopeConstraint` to the torso. Several placements must not leave the climber trailing a tangle of constraints, each paying out and each able to catch at a different moment.
+
+So at any time there is at most one live rope on the torso — the most recent one — and any number of older rope anchors fixed to the mountain. The respawn point is still the last anchor placed, whichever kind it was.
+
+This is safe on respawn. The live rope's length only grows, so the torso's position when the last anchor was placed is always within it.
+
+A fall starting above the rope drops some distance before it counts as falling, because freefall is judged by speed. That distance, plus the slack, is the catch distance. It is a tuning concern, not a flaw.
+
+### Grappling hook: deferred
+
+**Deferred at the start of phase 6, before any code.** The design is recorded here so it is not re-argued from scratch when the hook comes back.
+
+**Why it is deferred.** "Flings one extremity to a distant point" can only be built two ways:
+
+- a teleport, which decision 6 forbids
+- an external force pulling the limb, and through it the body
+
+The workable version of the second is a winching `RopeConstraint` with a bounded `WinchForce`. That is a second feel dial with exactly the flying risk of `AlignPosition.MaxForce`, which has already cost two days. It should not arrive alongside five other new systems.
+
+**The design to pick up when it returns:**
+
+- The hook is cast from the extremity along the aim ray, up to a range in `Config`.
+- The target must pass `CanGrip` for that limb, so no hooking `Ice` without a screw.
+- It creates a winching `RopeConstraint` from the extremity to the hit point, with `WinchForce` bounded in `Config`.
+- On arrival it converts to an ordinary grip. Cancelling it with the limb key releases it; the hook is spent either way.
+- `ToolUse` will need `aimOrigin` and `target`, for the same reason `LimbIntent` grew `aimOrigin`.
+- The hook is not a checkpoint. The failure section names only pitons and ropes.
+
+The rejected alternative is a literal fling: an impulse, then an ordinary grip attempt on arrival. It is less controllable and can miss.
+
+### Getting tools
+
+`ToolService` owns pickups. A pickup is a part tagged `ToolPickup` with a `ToolId` attribute. Any rig part touching it adds one of that tool to the pool and destroys the pickup. Placing pickups on the mountain is phase 7. Until then the pool starts at `Config.Tools.StartingInventory`, a test stock that phase 7 replaces with the real value.
+
+The inventory replicates as attributes written only by `ToolService` — the same pattern as limb ownership, for the same reason. A RemoteEvent would be a second copy of the state.
 
 ## Camera system
 
@@ -340,7 +435,9 @@ Shift first resolves at the press, as before. Limb key first is the hard case, b
 
 **`A` and `D` roll the torso** left and right — see the roll mechanic above. They sit in the middle of the block the limb keys bracket, `Q`/`E` above and `Z`/`C` below, so they are under the same hand without being under the same finger. `WASD` looks taken and is not: `CharacterAutoLoads` is off, so there is no character to move and nothing else in the game binds them. Holding both roll keys nets to zero rather than being an error.
 
-The full binding table is therefore `Q`/`E`/`Z`/`C` for limbs, `Shift` as the pull modifier, `A`/`D` for roll, `F` for the third-person toggle, and `Space` as the solo-limb alias.
+**`1`–`5` select a tool** (*added in phase 6*). A selected tool shows on the HUD, and pressing its key again cancels it. While a tool is selected, the next limb-key press applies it to that limb instead of reaching, and the selection clears. This is deliberately a selection rather than a chord: the Shift chord needed a timing window to tell it from a reach, and a second one would stack on top of it. Roblox's backpack UI is disabled, because it binds the same keys; there is no character, so it would only ever be empty.
+
+The full binding table is therefore `Q`/`E`/`Z`/`C` for limbs, `Shift` as the pull modifier, `A`/`D` for roll, `F` for the third-person toggle, `Space` as the solo-limb alias, and `1`–`5` for tools.
 
 **Run start.** With no lobby there has to be a defined moment when the session locks. The run starts `Config.Session.LobbyGraceSeconds` after the first player joins: everyone present at that instant is assigned, and the session locks per decision 1. Anyone arriving later is a spectator — camera and reticle, no limbs. If more than four players are present, the first four by join order are assigned and the rest spectate.
 
@@ -375,6 +472,10 @@ No traditional checkpoints — they undercut the tension the genre runs on. **Pl
 This ties failure directly into the consumable tool economy and creates a real decision at every anchor: spend it here, or push on and risk losing everything since the last one. That is meaningful tension generated entirely by systems already being built for other reasons.
 
 **Falling** applies no damage — there is no Humanoid and no health. The consequence is lost progress and lost time, which is sufficient. A fall past the last anchor respawns the rig at that anchor with stamina restored.
+
+**"At that anchor" means where the torso was when the anchor was placed**, not where the piton or rope is fixed. *Clarified at the start of phase 6.* A piton's position is on the rock face, so respawning the torso there puts it inside the wall. The torso's position at placement is known to be clear, because the body was there.
+
+**A run reset** clears every piton and rope placed, restores crumbled parts, and resets the inventory. It happens at each run start. There is no summit yet, so the only other end of a run is the session unlocking.
 
 ## Module structure
 
@@ -421,7 +522,7 @@ Keep these small — they fire every frame a limb is active.
 | `RollIntent` | Client to server | direction (−1, 0 or +1) |
 | `LimbState` | Server to client | limbId, gripState, stamina |
 | `ToolUse` | Client to server | toolId, limbId |
-| `AnchorSet` | Server to client | anchorPosition |
+| `AnchorSet` | Server to client | anchorPosition (the torso's position at placement) |
 
 Rate-limit `LimbIntent` server-side. It is the obvious exploit vector and the obvious source of bandwidth problems.
 
@@ -447,7 +548,7 @@ AI is good at systems, logic and tuning loops. It is bad at 3D modelling, spatia
 | 3 | Multiplayer assignment | LimbAssignment, input routing, RemoteEvents | Nothing |
 | 4 | Camera system | Stabilised mouse-look head-cam, third-person toggle | Judge the feel and report back — AI cannot evaluate this |
 | 5 | Stamina and falling | Drain rates, anchor respawn, the pull mechanic | Tune the numbers by playing |
-| 6 | Tools and surfaces | CanGrip modifiers, anchor spawning | **Model each tool** — piton, rope, ice screw, gloves, hook |
+| 6 | Tools and surfaces | CanGrip modifiers, anchor spawning | **Model each tool** — piton, rope, ice screw, gloves, chalk (hook deferred) |
 | 7 | Level design | Nothing | **The entire mountain** — geometry, tagging, tool placement, difficulty curve |
 
 ### Do not skip phase 1
@@ -523,6 +624,22 @@ This is the one thing an AI cannot evaluate for you. Spend real time here before
 
 Write them at the start of each phase, not now. Phase 1's results will change what phase 2 should be measured against, and criteria written in advance of that knowledge tend to be wrong in ways that are hard to notice.
 
+### Phase 6 — tools and surfaces
+
+Agreed 2026-09-23. The grappling hook is deferred and has no criterion.
+
+| # | Criterion | How to verify |
+| --- | --- | --- |
+| 1 | `Ice` cannot be gripped bare. With an ice screw it grips once, and the next Ice grip fails | Grip, release, grip again |
+| 2 | `Metal` drains stamina faster than `Rock`. Gloves reduce the drain and run out after 5 grips | Compare bars; count grips |
+| 3 | Chalk doubles regen for 30s, and the HUD shows it counting down | Observe bar and timer |
+| 4 | `Crumbling` releases every grip on it after its fixed `FailAfterSeconds` of total load, falls, and is restored at run reset | Time it; re-grip before and after |
+| 5 | A piton makes a new grippable hold and moves the respawn point | Grip the piton; fall past it |
+| 6 | A rope catches a fall that starts above its anchor and never pulls the body upward | Fall onto it; hang still |
+| 7 | Every use spends one from the shared pool, and an empty pool does nothing | Watch the HUD count across two clients |
+| 8 | A run reset removes every placed anchor and restores crumbled parts | Leave and rejoin |
+| 9 | All of the above holds under simulated latency | Studio network settings |
+
 ## Gotchas
 
 Each of these causes a rewrite if discovered late. Most are cheap to get right on day one.
@@ -536,7 +653,7 @@ Each of these causes a rewrite if discovered late. Most are cheap to get right o
 | `AlignPosition.MaxForce` left at default | Robotic or limp; either way unplayable | Treat as the primary feel dial; tune in `Config` |
 | Forgetting `SetNetworkOwner(nil)` | Physics silently drift to a client, desync appears randomly | Call it on every rig part at spawn, and again after respawn |
 | Constraint attachments on one part only | Joints behave unpredictably or fail silently | Every constraint needs an `Attachment` on **both** parts |
-| Anchor cleanup ignored | Placed pitons and ropes accumulate across runs | `AnchorService` owns lifecycle; clear on run end |
+| Anchor cleanup ignored | Placed pitons and ropes accumulate across runs | `ToolService` owns the instances and clears them on run reset; `AnchorService` owns only the checkpoint position |
 
 ### The self-collision detail
 
