@@ -35,11 +35,15 @@ local HUD = {}
 
 -- Display names. "ArmR" is what the code calls it; nobody should have to read that
 -- off a screen while hanging from a cliff.
+--
+-- CROSSED ON PURPOSE. The model's R and L parts are named the wrong way round for a
+-- body facing -Z: every *R part sits at -X, which is the climber's own left. The
+-- label says the side the player sees move, not the side the id claims.
 local LIMB_LABEL: { [LimbId]: string } = {
-	ArmR = "Right arm",
-	ArmL = "Left arm",
-	LegR = "Right leg",
-	LegL = "Left leg",
+	ArmR = "Left arm",
+	ArmL = "Right arm",
+	LegR = "Left leg",
+	LegL = "Right leg",
 }
 
 -- The three grip states, as a colour and as a word.
