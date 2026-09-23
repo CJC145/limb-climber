@@ -6,9 +6,9 @@
 -- This module keeps no mapping of its own -- it asks, every time. A player with no
 -- limbs is a spectator and simply never passes that check.
 --
--- A limb key means one of two things depending on whether shift is down when it is
--- pressed. Bare, it is the reach from phase 1: hold to let go and aim, release to
--- grip. With shift, it is a pull on a limb that is already gripped.
+-- A limb key means one of two things. Bare, it is the reach from phase 1: hold to
+-- let go and aim, release to grip. Held together with shift, in either order, it is
+-- a pull on a limb that is already gripped.
 --
 -- Shift has to be a modifier rather than a key of its own, and pull has to be a
 -- different chord rather than a second press of the same key, because holding a limb
@@ -41,17 +41,33 @@ local InputRouter = {}
 local held: { [LimbId]: true } = {}
 local heldByKey: { [Enum.KeyCode]: LimbId } = {}
 
--- The same, for pulls. A key is in one of these two pairs of tables or neither,
--- never both: shift at the moment of the press decides which, and the press is the
--- only time it is asked.
---
--- Deciding at press time is not merely consistent with the reach binding above, it
--- is the only workable answer. Shift can be let go in the middle of a hold, and
--- re-resolving would turn a pull into a reach without a keypress -- which, because
--- holding a limb key is what *releases* a grip, would drop the hold the player was
--- hauling on. Letting go of shift mid-pull does nothing. The limb key ends it.
+-- The same, for pulls. A held key is in exactly one of the four key tables here --
+-- reaching, pulling, pending or spent -- and moves between them only forward.
 local pulling: { [LimbId]: true } = {}
 local pullByKey: { [Enum.KeyCode]: LimbId } = {}
+
+-- A bare limb key on a gripped limb, not yet decided. Shift may still be coming, and
+-- a reach cannot wait for it: the first held intent the server sees drops the grip,
+-- which would leave a late shift with nothing to haul on. So the press sits here for
+-- Config.Input.PullGraceSeconds and sends nothing. Shift inside the window makes it
+-- a pull; the window running out makes it the reach it would always have been.
+--
+-- Only for a gripped limb, because only a grip has anything to lose. A free limb's
+-- reach starts at once, exactly as before.
+local pending: { [LimbId]: true } = {}
+local pendingByKey: { [Enum.KeyCode]: LimbId } = {}
+local pendingSince: { [LimbId]: number } = {}
+
+-- A pull that shift ended while the limb key was still down. The key does nothing
+-- more until it comes up. It must never fall back into a reach -- a reach begins by
+-- dropping the hold the player was just hauling on -- and pressing shift again does
+-- not restart it either; the limb key has to be pressed again.
+local spent: { [LimbId]: true } = {}
+local spentByKey: { [Enum.KeyCode]: LimbId } = {}
+
+-- The last grip state the server broadcast for each limb, so a press knows whether
+-- it has a grip to protect. Read from the same LimbState stream the HUD draws.
+local limbState: { [LimbId]: Types.GripState } = {}
 
 -- Roll is not a limb and so is tracked by key rather than by limb: one torso, and
 -- both roll keys can be down at once. Holding both is not an error and not ignored --
@@ -82,10 +98,10 @@ local function updateRoll()
 	Net.RollIntent:FireServer(direction)
 end
 
--- Polled at the moment of the press rather than tracked through its own key events.
--- Shift can be pressed before this module ever sees a limb key, and can be held
--- across an alt-tab that eats the key-up, so asking the service for the live state is
--- more reliable than keeping a copy of it.
+-- Polled rather than tracked through its own key events -- at the press, and every
+-- frame while a press is pending or pulling. Shift can be pressed before this module
+-- ever sees a limb key, and can be held across an alt-tab that eats the key-up, so
+-- asking the service for the live state is more reliable than keeping a copy of it.
 local function pullModifierDown(): boolean
 	for _, key in Config.Input.PullModifiers do
 		if UserInputService:IsKeyDown(key) then
@@ -113,7 +129,45 @@ local function soloOwnedLimb(): LimbId?
 	return found
 end
 
+-- Any gesture at all already running on this limb, through any key. A solo player
+-- can reach one limb through its own key and through Space; whichever arrives first
+-- owns the limb, and the second press is ignored so that releasing one key cannot
+-- end a gesture the other is still holding.
+local function limbBusy(limbId: LimbId): boolean
+	return held[limbId] ~= nil or pulling[limbId] ~= nil or pending[limbId] ~= nil or spent[limbId] ~= nil
+end
+
+local function startReach(key: Enum.KeyCode, limbId: LimbId)
+	held[limbId] = true
+	heldByKey[key] = limbId
+end
+
+local function startPull(key: Enum.KeyCode, limbId: LimbId)
+	pulling[limbId] = true
+	pullByKey[key] = limbId
+	Net.LimbPull:FireServer(limbId, true)
+end
+
+local function endPull(key: Enum.KeyCode, limbId: LimbId)
+	pullByKey[key] = nil
+	pulling[limbId] = nil
+	Net.LimbPull:FireServer(limbId, false)
+end
+
+local function clearPending(key: Enum.KeyCode, limbId: LimbId)
+	pendingByKey[key] = nil
+	pending[limbId] = nil
+	pendingSince[limbId] = nil
+end
+
 function InputRouter.Start()
+	Net.LimbState.OnClientEvent:Connect(function(limbId: any, state: any)
+		if Config.Input.LimbKeys[limbId] == nil then
+			return
+		end
+		limbState[limbId :: LimbId] = state :: Types.GripState
+	end)
+
 	local limbByKey: { [Enum.KeyCode]: LimbId } = {}
 	for limbId, key in Config.Input.LimbKeys do
 		limbByKey[key] = limbId
@@ -153,36 +207,25 @@ function InputRouter.Start()
 		end
 
 		local limbId = limbForKey(input.KeyCode)
-		if not limbId or not ownsLimb(limbId) then
+		if not limbId or not ownsLimb(limbId) or limbBusy(limbId) then
 			return
 		end
 
-		-- Shift decides which of the two things this key press is. Space resolves
-		-- through limbForKey exactly as a limb key does, so a solo player's Space is
-		-- an alias in both modes rather than only in one -- shift-Space pulls that
-		-- player's limb, and bare Space still reaches with it, unchanged from phase 3.
+		-- Space resolves through limbForKey exactly as a limb key does, so a solo
+		-- player's Space is an alias in every mode rather than only in one.
 		if pullModifierDown() then
-			-- Same guard as the reach below, for the same reason: a solo player can
-			-- start one pull through two different keys.
-			if pulling[limbId] then
-				return
-			end
-
-			pulling[limbId] = true
-			pullByKey[input.KeyCode] = limbId
-			Net.LimbPull:FireServer(limbId, true)
+			startPull(input.KeyCode, limbId)
 			return
 		end
 
-		-- A solo-limb player can reach the same limb through its own key and through
-		-- Space. Whichever arrives first owns the reach; the second press is ignored
-		-- so that releasing one key cannot end a reach the other is still holding.
-		if held[limbId] then
+		if limbState[limbId] == "Gripped" then
+			pending[limbId] = true
+			pendingByKey[input.KeyCode] = limbId
+			pendingSince[limbId] = os.clock()
 			return
 		end
 
-		held[limbId] = true
-		heldByKey[input.KeyCode] = limbId
+		startReach(input.KeyCode, limbId)
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
@@ -200,9 +243,24 @@ function InputRouter.Start()
 		-- running because its key-up was swallowed is a motor nobody can switch off.
 		local pullLimb = pullByKey[input.KeyCode]
 		if pullLimb then
-			pullByKey[input.KeyCode] = nil
-			pulling[pullLimb] = nil
-			Net.LimbPull:FireServer(pullLimb, false)
+			endPull(input.KeyCode, pullLimb)
+			return
+		end
+
+		-- A tap on a gripped limb shorter than the grace window. Nothing was sent, so
+		-- nothing needs undoing and the hold is kept. Before the window existed the
+		-- same tap dropped the grip for a frame and re-gripped wherever the hand was,
+		-- which came to the same thing by a longer route.
+		local pendingLimb = pendingByKey[input.KeyCode]
+		if pendingLimb then
+			clearPending(input.KeyCode, pendingLimb)
+			return
+		end
+
+		local spentLimb = spentByKey[input.KeyCode]
+		if spentLimb then
+			spentByKey[input.KeyCode] = nil
+			spent[spentLimb] = nil
 			return
 		end
 
@@ -221,6 +279,28 @@ function InputRouter.Start()
 
 	RunService.RenderStepped:Connect(function()
 		local now = os.clock()
+		local modifierDown = pullModifierDown()
+
+		-- Before the reach stream below, so a press that becomes a reach this frame
+		-- sends its first intent this frame rather than the next.
+		for key, limbId in pendingByKey do
+			if modifierDown then
+				clearPending(key, limbId)
+				startPull(key, limbId)
+			elseif now - pendingSince[limbId] >= Config.Input.PullGraceSeconds then
+				clearPending(key, limbId)
+				startReach(key, limbId)
+			end
+		end
+
+		-- Shift let go mid-pull ends the pull and parks the key. See `spent`.
+		if not modifierDown then
+			for key, limbId in pullByKey do
+				endPull(key, limbId)
+				spent[limbId] = true
+				spentByKey[key] = limbId
+			end
+		end
 
 		for limbId in held do
 			local last = lastSentAt[limbId]

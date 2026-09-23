@@ -46,6 +46,10 @@ local LIMB_LABEL: { [LimbId]: string } = {
 	LegL = "Right leg",
 }
 
+-- The pull chord, as a player reads it. Config lists both shift keys separately, and
+-- "LeftShift" is an enum name rather than something to print.
+local PULL_HINT = "Shift+key: pull"
+
 -- The three grip states, as a colour and as a word.
 --
 -- Both, not either. Colour is what gets noticed in peripheral vision, which is the
@@ -258,7 +262,11 @@ function HUD.Start()
 		-- out the grace window, and spectating because it locked without them -- and
 		-- the distinction does not change what they can do, so the text does not try
 		-- to tell them apart.
-		title.Text = if owned > 0 then "YOUR LIMBS" else "LIMBS  (none assigned)"
+		--
+		-- The pull hint rides on the title rather than on every row: it is the same
+		-- chord for every limb, and four copies of it would crowd out the stamina bars.
+		-- Only for a player with limbs, who is the only one it works for.
+		title.Text = if owned > 0 then `YOUR LIMBS  {PULL_HINT}` else "LIMBS  (none assigned)"
 
 		for _, limbId in Config.Input.LimbOrder do
 			local row = rows[limbId]

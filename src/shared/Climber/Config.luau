@@ -552,6 +552,7 @@ export type InputConfig = {
 	LimbOrder: { LimbId },
 	SoloLimbKey: Enum.KeyCode,
 	PullModifiers: { Enum.KeyCode },
+	PullGraceSeconds: number,
 	RollKeys: { Left: Enum.KeyCode, Right: Enum.KeyCode },
 }
 
@@ -583,6 +584,13 @@ local input: InputConfig = {
 	--
 	-- Both shifts, so it does not matter which hand is free.
 	PullModifiers = { Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift },
+
+	-- How long a bare limb key on a gripped limb waits for shift before it becomes a
+	-- reach, so that limb-key-then-shift is a pull and not a dropped hold. Paid on
+	-- every reach that starts from a grip, so it wants to be as short as a deliberate
+	-- two-key chord allows. Too short and the second key misses it; too long and
+	-- letting go of a hold feels sticky. Guess.
+	PullGraceSeconds = 0.12,
 
 	-- Roll the torso left and right. A and D because they already mean left and right
 	-- to everyone who has played anything, and because they sit in the middle of the
