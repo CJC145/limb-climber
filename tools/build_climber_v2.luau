@@ -11,6 +11,10 @@
 -- attachments on the same parts, all with identity rotation, because ClimberRig sets
 -- every constraint frame itself and reads nothing but attachment positions.
 --
+-- Plus one the original does not have: Harness on the Torso, added in phase 6 as the
+-- torso end of the rope. It is not a joint, so nothing else meets it. The backup rig
+-- lacks it and ToolService falls back to the torso's centre there.
+--
 -- THE NAMES ARE MIRRORED ON PURPOSE, exactly as in the original. The body faces -Z,
 -- so -X is the climber's own left -- and every *R part goes at -X. The HUD labels
 -- and comments already account for this; naming the sides "correctly" here would
@@ -65,8 +69,16 @@ end
 
 local NECK = Vector3.new(0, 5.15, 0)
 
+-- Where the rope clips on: the front of the waist, on the torso's -Z face (the body
+-- faces -Z), a little above the hip line at the torso's bottom edge (y 3.0). A
+-- harness sits there rather than at the centre of mass, so a caught climber hangs
+-- slightly back-tipped, the way a real one does. The height is a judgement call --
+-- move it here and regenerate, not in the exported model.
+local HARNESS = Vector3.new(0, 3.35, -0.35)
+
 local torso = makePart("Torso", Vector3.new(1.3, 2.1, 0.7), Vector3.new(0, 4.05, 0), SKIN)
 attach(torso, "NeckBottom", NECK)
+attach(torso, "Harness", HARNESS)
 
 local head = makePart("Head", Vector3.new(0.7, 0.85, 0.8), Vector3.new(0, 5.6, 0), SKIN)
 attach(head, "NeckTop", NECK)
